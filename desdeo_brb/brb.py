@@ -1,30 +1,105 @@
 import numpy as np
+import pandas as pd
 from typing import List, Callable, Optional
 from collections import namedtuple
-from scipy.optimize import LinearConstraint
 from scipy.optimize import minimize
+import matplotlib.pyplot as plt
 from copy import copy
 
 
-
-import matplotlib.pyplot as plt
-
-Trainables = namedtuple(
-    "Trainables",
+class BRBResult(namedtuple(
+    "BRBResult",
     [
-        "flat_trainables",
-        "n_attributes",
-        "n_precedents",
-        "n_rules",
-        "n_consequents",
+        "precedents",
+        "precedents_belief_degrees",
+        "consequents",
+        "consequent_belief_degrees",
     ],
-)
+)):
+    def __str__(self):
+        precedents_distributions = []
+        for i in range(len(self.precedents)):
+            distribution = []
+            distribution.append([(a, b) for a, b in zip(self.precedents[i], self.precedents_belief_degrees[i])])
+            precedents_distributions.append(distribution[0])
+        return str(precedents_distributions)
+        
+
+
+class Trainables(
+    namedtuple(
+        "Trainables",
+        [
+            "flat_trainables",
+            "n_attributes",
+            "n_precedents",
+            "n_rules",
+            "n_consequents",
+        ],
+    )
+):
+    """Defines a named tuple containing information on the parameters of a
+    BRB-model in a flattened format. This format is useful with various
+    optimization routines.
+
+    """
+
+    def __str__(self):
+        bre_m, thetas, deltas, precedents = BRB._unflatten_parameters(self)
+        bre_m_df = pd.DataFrame(
+            data=bre_m,
+            index=[f"A_{i+1}" for i in range(bre_m.shape[0])],
+            columns=[f"D_{i+1}" for i in range(bre_m.shape[1])],
+        )
+        thetas_df = pd.DataFrame(
+            data=thetas,
+            index=[f"θ_{i+1}" for i in range(thetas.shape[0])],
+            columns=["Rule weight"],
+        )
+        deltas_df = pd.DataFrame(
+            data=deltas,
+            index=[f"δ_{i+1}" for i in range(deltas.shape[0])],
+            columns=[f"x_{i+1}" for i in range(deltas.shape[1])],
+        )
+        precedents_df = pd.DataFrame(
+            data=precedents,
+            index=[f"A_{i+1}j" for i in range(precedents.shape[0])],
+            columns=[f"A_i{i+1}" for i in range(precedents.shape[1])],
+        )
+        string = (
+            "Belief rule expression matrix:\n{}\nRule weights:\n{}\n"
+            "Attribute weights:\n{}\nPrecedents:\n{}"
+        ).format(
+            bre_m_df.round(2).to_string(),
+            thetas_df.round(2).to_string(),
+            deltas_df.round(2).to_string(),
+            precedents_df.round(2).to_string(),
+        )
+        return string
 
 
 class BRB:
     """Constructs a trainable BRB model.
 
     Arguments:
+        precedents (np.ndarray): 2D dimensional array with the ith row
+        representing the referential values for the ith attribute in the input
+        of the model. The referential values should be in a hierarchial order
+        where the first element of each row is the smallest element of the row,
+        and the last element the greatest.
+        consequents (np.ndarray): 1D array of the possible values for the
+        output of the model.
+        rule_weights (np.ndarray, optional): 1D array with the ith element
+        representing the initial invidual rule weight for the ith rule.
+        attr_weights (np.ndarray, optional): 2D array with the jth column
+        represent the initial invidual attribute weight in the k (row) rule.
+        bre_m (np.ndarray, optional): 2D array with the initial belief rule
+        expressions.
+        f (Callable, optional): A function representing the system to be
+        modeled.  Can be just a mapping from x -> y. Used to construct an
+        initial rule base.
+
+    Attributes:
         precedents (np.ndarray): 2D dimensional array with the ith row
         representing the referential values for the ith attribute in the input
         of the model.
@@ -36,9 +111,10 @@ class BRB:
         represent the initial invidual attribute weight in the k (row) rule.
         bre_m (np.ndarray, optional): 2D array with the initial belief rule
         expressions.
-        f (Callable, optional): The real system.
-
-    Attributes:
+        f (Callable, optional): A function representing the system to be
+        modeled.  Can be just a mapping from x -> y. Used to construct an
+        initial rule base.
+        trained (bool): Indicastes whether the model has been trained.
 
     """
 
@@ -50,6 +126,7 @@ class BRB:
         attr_weights: Optional[np.ndarray] = None,
         bre_m: Optional[np.ndarray] = None,
         f: Optional[Callable] = lambda x: x * np.sin(x ** 2),
+        utility: Optional[Callable] = lambda y: y,
     ):
         self.precedents = precedents
         self.consequents = consequents
@@ -58,6 +135,7 @@ class BRB:
         # self.attr_weights = attr_weights
         # self.bre_m = bre_m
         self.f = f
+        self.utility = utility
 
         self.thetas, self.deltas, self.bre_m = self.construct_inital_rule_base(
             self.precedents, self.consequents, self.f
@@ -65,38 +143,70 @@ class BRB:
 
         self.trained = False
 
-    def predict(
-        self, x: np.ndarray, utility: Optional[Callable] = lambda x: x
-    ) -> float:
+    def __str__(self):
+        trainables = self._flatten_parameters()
+        return str(trainables)
+
+    def predict(self, x: np.ndarray) -> BRBResult:
+        """Predictt an outcome using the current parameters set in the
+        BRB-model for an input.
+
+        Arguments:
+            x (np.ndarray): A 1D array with n elements, where n is the number
+            of attributes the BRB system expects.
+
+        Returns:
+
+        """
         return self._predict(
-            x, utility, self.precedents, self.thetas, self.deltas, self.bre_m
+            x,
+            self.precedents,
+            self.consequents,
+            self.thetas,
+            self.deltas,
+            self.bre_m,
         )
 
     def _predict(
         self,
         x: np.ndarray,
-        utility: Callable,
         precedents: np.ndarray,
+        consequents: np.ndarray,
         thetas: np.ndarray,
         deltas: np.ndarray,
         bre_m: np.ndarray,
-    ) -> float:
+    ) -> BRBResult:
+        """Like predict, but the parameters of the BRB-model can be given
+        explicitly. Used in for training. See BRB.predict and the top level
+        documentation for this class for further details.
+
+        """
         alphas = self.belief_distribution(x, precedents)
         rules = self.cartesian_product(alphas)
         ws = self.calculate_activation_weights(rules, thetas, deltas)
         betas = self.calculate_combined_belief_degrees(bre_m, ws)
-        y = np.sum(utility(consequents) * betas)
 
-        return y
+        res = BRBResult(precedents, alphas, consequents, betas)
+        return res
 
     def construct_inital_rule_base(
         self, precedents: np.ndarray, consequents: np.ndarray, f: Callable
-    ):
+    ) -> (np.ndarray, np.ndarray, np.ndarray):
+        """Constructs the initial rule base using precedents and consequents,
+        and a given mapping from input to expected output. See the top level
+        documentation for this class for details on the attributes.
+
+        Returns:
+            (np.ndarray, np.ndarray, np.ndarray): The rule weights, the
+            attibute weights in each rule and the belief rule expression
+            matrix.
+
+        """
         rules = self.cartesian_product(precedents)
         thetas = np.ones((len(rules), 1)) / len(rules)
         deltas = np.array([1])
         bre_m = self.construct_initial_belief_rule_exp_matrix(
-            precedents, consequents, f
+            rules, consequents, f
         )
 
         return thetas, deltas, bre_m
@@ -128,7 +238,7 @@ class BRB:
         alphas = np.zeros((n_x, n_h))
 
         for n in range(n_h):
-            # using the modulus, we achieve a circular indexinf for the array
+            # using the modulus, we achieve a circular indexing for the array
             alphas[:, n - 1 % n_h] = np.min(
                 [
                     np.max(
@@ -231,7 +341,7 @@ class BRB:
         return ws
 
     def construct_initial_belief_rule_exp_matrix(
-        self, refs: np.ndarray, consequents: np.ndarray, fun: Callable
+        self, rules: np.ndarray, consequents: np.ndarray, fun: Callable
     ):
         """Calculate the initial belief rule degree matrix using a known mapping
         from input to output on the referential value set. Each row should
@@ -255,8 +365,8 @@ class BRB:
             Works only with scalar valued functions at the moment.
 
         """
-        ys = fun(refs)
-        return self.belief_distribution(ys[0], consequents)
+        ys = np.apply_along_axis(fun, 1, rules)
+        return self.belief_distribution(ys, consequents)
 
     def calculate_combined_belief_degrees(
         self, bre: np.ndarray, ws: np.ndarray
@@ -290,16 +400,25 @@ class BRB:
 
         return beta
 
-    def train(
-        self,
-        xs: np.ndarray,
-        ys: np.ndarray,
-        trainables: Trainables,
-        utility: Optional[Callable] = lambda y: y,
-    ):
+    def train(self, xs: np.ndarray, ys: np.ndarray, _trainables: Trainables):
         """Train the BRB using input-output pairs.
 
+        Arguments:
+            xs (np.ndarray): 2D array of the inputs with the n:th row being one
+            sample with the elements representing the attribute values of that
+            sample.
+            ys (np.ndarray): 1D array of scalars with the n:th element
+            representing the expected output for the n:th input in xs.
+            _trainables (Trainables): A named tuple used to construct the
+            optimization problem to train the BRB-model. Functions as an
+            initial guess for the optimizer as well. See the documentation.
+
+        Returns:
+            Tainables: A named tuple containg the trained variables in a
+            flattened format that define a trained BRB-model.
+
         """
+        trainables = copy(_trainables)
 
         # construct bounds
         # belief degrees between 0 and 1
@@ -385,7 +504,11 @@ class BRB:
         return trainables
 
     def _objective(
-            self, flat_trainables: np.ndarray, trainables: Trainables, xs: np.ndarray, ys: np.ndarray
+        self,
+        flat_trainables: np.ndarray,
+        trainables: Trainables,
+        xs: np.ndarray,
+        ys: np.ndarray,
     ):
         trainables.flat_trainables[:] = flat_trainables
         res = (1 / len(xs)) * sum(
@@ -423,14 +546,24 @@ class BRB:
 
         return trainables
 
-    def _predict_flatten(self, trainables: Trainables, x: np.ndarray) -> float:
-        """Predicts an outcome using a set of trainable parameters flattened to
-        a 1d array.
+    def _unflatten_parameters(
+        trainables: Trainables
+    ) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):
+        """Unflatten an instance of Trainables and return the paramters
+        defining a BRB-model.
+
+        Arguments:
+            trainables (Trainables): A named tuple with flattened parameters
+            defining a BRB-model.
+
+        Returns:
+            (np.ndarray, np.ndarray, np.ndarray, np.ndarray): The belief rule
+            expression matrix, the rule weights, the attribute weights in each
+            rule and the precedents.
 
         """
         # running index
         idx = 0
-
         bre_m = np.reshape(
             trainables.flat_trainables[
                 0 : (trainables.n_rules * trainables.n_consequents)
@@ -459,53 +592,65 @@ class BRB:
             ],
             (trainables.n_attributes, trainables.n_precedents),
         )
-
         idx += trainables.n_attributes * trainables.n_precedents
 
-        return self._predict(x, lambda y: y, precedents, thetas, deltas, bre_m)
+        return bre_m, thetas, deltas, precedents
+
+    def _predict_flatten(self, trainables: Trainables, x: np.ndarray) -> float:
+        """Predicts an outcome using a set of trainable parameters flattened to
+        a 1d array.
+
+        Arguments:
+            trainables (Trainables): A named tuple with flattened parameters
+            defining a BRB-model.
+            x (np.ndarray): Input to the BRB-model.
+        
+        Returns:
+            (float): A prediction
+
+        """
+        bre_m, thetas, deltas, precedents = BRB._unflatten_parameters(
+            trainables
+        )
+
+        res = self._predict(
+            x, precedents, self.consequents, thetas, deltas, bre_m
+        )
+        return sum(
+            self.utility(self.consequents[0]) * res.consequent_belief_degrees
+        )
 
 
 # Testing
-def f(x):
-    return np.sin(x)*np.cos(x**2)*np.exp(np.sin(x))
+def main():
+    def f(x):
+        return np.sin(x[0]) * np.cos(x[0] ** 2) * np.exp(np.sin(x[0]))
 
+    def himmelblau(x):
+        return (x[0]**2 + x[1] - 11)**2 + (x[0] + x[1]**2 - 7)**2
 
-refs = np.array([[0, 0.5, 1, 1.5, 2, 2.5, 3]])
-consequents = np.array([[-2, -1, 4, 8, 14]])
+    def linspace2d(low, up, n):
+        step_s = (up - low) / n
+        return np.mgrid[low[0]:up[0]+0.1:step_s[0], low[1]:up[1]+0.1:step_s[1]].reshape(2, -1).T
 
-# Construct an initial model
-brb = BRB(refs, consequents, f=f)
+#    refs = np.array([[0, 1, 2, 2.5, 3]])
+#    consequents = np.array([[-3, -1, 0, 2, 3]])
+    refs = np.array([[-6, -4, -2, 0, 2, 4, 6], [-6, -4, -2, 0, 2, 4, 6]])
+    consequents = np.array([[0, 200, 500, 1000, 2200]])
 
-# generate a random set of inputs and outputs
-low = 0
-up = 3
-n = 25
-xs_train = np.linspace(low, up, n)
-ys_train = f(xs_train)
+    # Construct an initial model
+    brb = BRB(refs, consequents, f=himmelblau)
+    # print(brb)
 
-# untrained prediction
-prediction_untrained = np.zeros(n)
-for i in range(n):
-    prediction_untrained[i] = brb.predict(np.array([xs_train[i]]))
+    # generate a random set of inputs and outputs
+    low = np.array([-6, -6])
+    up = np.array([6, 6])
+    n = 15
+    xs_train = linspace2d(low, up, n)
+    ys_train = np.array(list(map(himmelblau, xs_train)))
 
-plt.plot(xs_train, prediction_untrained, label="Untrained")
+    plt.plot(np.linspace(0, len(ys_train), len(ys_train)), ys_train)
+    plt.show()
 
-trainables = brb._flatten_parameters()
-
-trainables = brb.train(xs_train, ys_train, trainables)
-
-prediction_trained = np.zeros(n)
-for i in range(n):
-    prediction_trained[i] = brb._predict_flatten(trainables, np.array([xs_train[i]]))
-
-plt.plot(xs_train, prediction_trained, label="Trained")
-
-# real values
-xs = np.linspace(0, 3, 200)
-plt.plot(xs, f(xs), label="f")
-
-plt.xlabel("x")
-plt.ylabel("y")
-#plt.ylim([-3, 3])
-plt.legend()
-plt.show()
+if __name__ == "__main__":
+    main()

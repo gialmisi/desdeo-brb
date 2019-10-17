@@ -12,6 +12,7 @@ flake8 = "^3.7.8"
 black = "^19.3b0"
 isort = "^4.3.21"
 matplotlib = "^3.1.1"
+pandas = "^0.25.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^3.0"
