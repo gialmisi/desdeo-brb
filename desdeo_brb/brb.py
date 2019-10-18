@@ -7,23 +7,31 @@ import matplotlib.pyplot as plt
 from copy import copy
 
 
-class BRBResult(namedtuple(
-    "BRBResult",
-    [
-        "precedents",
-        "precedents_belief_degrees",
-        "consequents",
-        "consequent_belief_degrees",
-    ],
-)):
+class BRBResult(
+    namedtuple(
+        "BRBResult",
+        [
+            "precedents",
+            "precedents_belief_degrees",
+            "consequents",
+            "consequent_belief_degrees",
+        ],
+    )
+):
     def __str__(self):
         precedents_distributions = []
         for i in range(len(self.precedents)):
             distribution = []
-            distribution.append([(a, b) for a, b in zip(self.precedents[i], self.precedents_belief_degrees[i])])
+            distribution.append(
+                [
+                    (a, b)
+                    for a, b in zip(
+                        self.precedents[i], self.precedents_belief_degrees[i]
+                    )
+                ]
+            )
             precedents_distributions.append(distribution[0])
         return str(precedents_distributions)
-        
 
 
 class Trainables(
@@ -400,8 +408,10 @@ class BRB:
 
         return beta
 
-    def train(self, xs: np.ndarray, ys: np.ndarray, _trainables: Trainables):
-        """Train the BRB using input-output pairs.
+    def train(
+        self, xs: np.ndarray, ys: np.ndarray, _trainables: Trainables
+    ) -> Trainables:
+        """Train the BRB using input-output pairs. And update the model's parameters.
 
         Arguments:
             xs (np.ndarray): 2D array of the inputs with the n:th row being one
@@ -415,7 +425,8 @@ class BRB:
 
         Returns:
             Tainables: A named tuple containg the trained variables in a
-            flattened format that define a trained BRB-model.
+            flattened format that define a trained BRB-model. If the
+            optimization is not successfull, return the initial guess.
 
         """
         trainables = copy(_trainables)
@@ -495,26 +506,43 @@ class BRB:
             method="SLSQP",
             bounds=all_bounds,
             constraints=all_cons,
-            options={"ftol": 1e-6, "disp": True},
+            options={"ftol": 1e-3, "disp": True},
+            callback=lambda x: print(x),
         )
 
-        x = opt_res.x
-        trainables.flat_trainables[:] = x
-        self.trained = True
-        return trainables
+        if opt_res.success:
+            x = opt_res.x
+            trainables.flat_trainables[:] = x
+
+            # update parameters
+            bre_m, thetas, deltas, precedents = BRB._unflatten_parameters(
+                trainables
+            )
+            self.bre_m = bre_m
+            self.thetas = thetas
+            self.deltas = deltas
+            self.precedents = precedents
+            self.trained = True
+            return trainables
+        else:
+            return _trainables
 
     def _objective(
         self,
         flat_trainables: np.ndarray,
         trainables: Trainables,
         xs: np.ndarray,
-        ys: np.ndarray,
+        ys_bar: np.ndarray,
     ):
         trainables.flat_trainables[:] = flat_trainables
-        res = (1 / len(xs)) * sum(
-            (ys[i] - self._predict_flatten(trainables, np.array([xs[i]]))) ** 2
-            for i in range(len(xs))
-        )
+        (
+            self._train_bre_m,
+            self._train_thetas,
+            self._train_deltas,
+            self._train_precedents,
+        ) = BRB._unflatten_parameters(trainables)
+        ys = np.apply_along_axis(lambda x: self._predict_train(x), 1, xs)
+        res = (1 / len(xs)) * np.sum((ys_bar - ys) ** 2)
         return res
 
     def _flatten_parameters(self) -> Trainables:
@@ -596,25 +624,25 @@ class BRB:
 
         return bre_m, thetas, deltas, precedents
 
-    def _predict_flatten(self, trainables: Trainables, x: np.ndarray) -> float:
-        """Predicts an outcome using a set of trainable parameters flattened to
-        a 1d array.
+    def _predict_train(self, x: np.ndarray) -> float:
+        """Predicts outcomes during training
 
         Arguments:
             trainables (Trainables): A named tuple with flattened parameters
             defining a BRB-model.
             x (np.ndarray): Input to the BRB-model.
-        
+
         Returns:
             (float): A prediction
 
         """
-        bre_m, thetas, deltas, precedents = BRB._unflatten_parameters(
-            trainables
-        )
-
         res = self._predict(
-            x, precedents, self.consequents, thetas, deltas, bre_m
+            x,
+            self._train_precedents,
+            self.consequents,
+            self._train_thetas,
+            self._train_deltas,
+            self._train_bre_m,
         )
         return sum(
             self.utility(self.consequents[0]) * res.consequent_belief_degrees
@@ -622,35 +650,119 @@ class BRB:
 
 
 # Testing
-def main():
-    def f(x):
-        return np.sin(x[0]) * np.cos(x[0] ** 2) * np.exp(np.sin(x[0]))
-
+def article2():
     def himmelblau(x):
-        return (x[0]**2 + x[1] - 11)**2 + (x[0] + x[1]**2 - 7)**2
+        return (x[0] ** 2 + x[1] - 11) ** 2 + (x[0] + x[1] ** 2 - 7) ** 2
 
     def linspace2d(low, up, n):
         step_s = (up - low) / n
-        return np.mgrid[low[0]:up[0]+0.1:step_s[0], low[1]:up[1]+0.1:step_s[1]].reshape(2, -1).T
+        return (
+            np.mgrid[
+                low[0] : up[0] + 0.1 : step_s[0],
+                low[1] : up[1] + 0.1 : step_s[1],
+            ]
+            .reshape(2, -1)
+            .T
+        )
 
-#    refs = np.array([[0, 1, 2, 2.5, 3]])
-#    consequents = np.array([[-3, -1, 0, 2, 3]])
+    #    refs = np.array([[0, 1, 2, 2.5, 3]])
+    #    consequents = np.array([[-3, -1, 0, 2, 3]])
     refs = np.array([[-6, -4, -2, 0, 2, 4, 6], [-6, -4, -2, 0, 2, 4, 6]])
     consequents = np.array([[0, 200, 500, 1000, 2200]])
 
     # Construct an initial model
     brb = BRB(refs, consequents, f=himmelblau)
-    # print(brb)
 
     # generate a random set of inputs and outputs
     low = np.array([-6, -6])
     up = np.array([6, 6])
-    n = 15
+    n = 4
     xs_train = linspace2d(low, up, n)
     ys_train = np.array(list(map(himmelblau, xs_train)))
 
-    plt.plot(np.linspace(0, len(ys_train), len(ys_train)), ys_train)
+    # Real data to compare to
+    xs = linspace2d(low, up, 14)
+    ys = np.array(list(map(himmelblau, xs)))
+
+    # untrained data
+    ys_untrained = [
+        np.sum(res.consequents * res.consequent_belief_degrees)
+        for res in map(brb.predict, xs)
+    ]
+
+    # train the BRB
+    brb.train(xs_train, ys_train, brb._flatten_parameters())
+    print(brb)
+
+    # trained data
+    ys_trained = [
+        np.sum(res.consequents * res.consequent_belief_degrees)
+        for res in map(brb.predict, xs)
+    ]
+
+    plt.plot(np.linspace(0, len(ys), len(ys)), ys, label="function")
+    plt.plot(np.linspace(0, len(ys), len(ys)), ys_untrained, label="Untrained")
+    plt.plot(np.linspace(0, len(ys), len(ys)), ys_trained, label="Trained")
+    plt.legend()
     plt.show()
 
+
+def article1():
+    # define the problem and limits for the input
+    def f(x):
+        return np.sin(x[0]) * np.cos(x[0] ** 2) * np.exp(np.sin(x[0]))
+
+    low = 0
+    up = 3
+
+    # create training data
+    n_train = 200
+    xs_train = np.random.uniform(low, up, (n_train, 1))
+    ys_train = np.apply_along_axis(f, 1, xs_train)
+
+    # create evaluation data
+    n_eval = 1000
+    xs = np.linspace(low, up, n_eval).reshape(-1, 1)
+    ys = np.apply_along_axis(f, 1, xs)
+
+    # create a brb model with given referential values
+    precedents = np.array([[0, 0.5, 1, 1.5, 2, 2.5, 3]])
+    consequents = np.array([[-2.5, -1, 1, 2, 3]])
+
+    # construct an initial BRB model
+    brb = BRB(precedents, consequents, f=f)
+    print("Before training")
+    print(brb)
+
+    # untrained predictions on evaluation data
+    ys_untrained = np.array(
+        [
+            np.sum(res.consequents * res.consequent_belief_degrees)
+            for res in map(brb.predict, xs)
+        ]
+    )
+
+    # train the model
+    brb.train(xs_train, ys_train, brb._flatten_parameters())
+
+    print("After training")
+    print(brb)
+
+    ys_trained = np.array(
+        [
+            np.sum(res.consequents * res.consequent_belief_degrees)
+            for res in map(brb.predict, xs)
+        ]
+    )
+
+    plt.plot(xs, ys, label="f", ls="dotted")
+    plt.plot(xs, ys_untrained, label="untrained", ls="--")
+    plt.plot(xs, ys_trained, label="trained")
+    plt.ylim((-3, 3))
+    plt.legend()
+
+    plt.show()
+
+
 if __name__ == "__main__":
-    main()
+    article2()
