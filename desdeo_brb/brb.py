@@ -429,6 +429,7 @@ class BRB:
             optimization is not successfull, return the initial guess.
 
         """
+        print("Training model...")
         trainables = copy(_trainables)
 
         # construct bounds
@@ -506,11 +507,12 @@ class BRB:
             method="SLSQP",
             bounds=all_bounds,
             constraints=all_cons,
-            options={"ftol": 1e-3, "disp": True},
-            callback=lambda x: print(x),
+            options={"ftol": 1e-6, "disp": False},
+            callback=lambda _: print("."),
         )
 
         if opt_res.success:
+            print("Training successfull!")
             x = opt_res.x
             trainables.flat_trainables[:] = x
 
@@ -525,6 +527,7 @@ class BRB:
             self.trained = True
             return trainables
         else:
+            print("Training NOT success!")
             return _trainables
 
     def _objective(
@@ -716,7 +719,7 @@ def article1():
     up = 3
 
     # create training data
-    n_train = 200
+    n_train = 100
     xs_train = np.random.uniform(low, up, (n_train, 1))
     ys_train = np.apply_along_axis(f, 1, xs_train)
 
@@ -765,4 +768,4 @@ def article1():
 
 
 if __name__ == "__main__":
-    article2()
+    article1()
