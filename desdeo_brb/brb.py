@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import List, Callable, Optional
+from typing import List, Callable, Optional, Tuple
 from collections import namedtuple
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
@@ -30,7 +30,7 @@ class BRBResult(
                 [
                     (a, b)
                     for a, b in zip(
-                        self.precedents[i], self.precedents_belief_degrees[i]
+                        self.precedents[i], self.precedents_belief_degrees[0][i]
                     )
                 ]
             )
@@ -82,10 +82,10 @@ class Trainables(
             "Belief rule expression matrix:\n{}\nRule weights:\n{}\n"
             "Attribute weights:\n{}\nPrecedents:\n{}"
         ).format(
-            bre_m_df.round(2).to_string(),
-            thetas_df.round(2).to_string(),
+            bre_m_df.round(3).to_string(),
+            thetas_df.round(3).to_string(),
             deltas_df.to_string(),
-            precedents_df.round(2).to_string(),
+            precedents_df.round(3).to_string(),
         )
         return string
 
@@ -352,7 +352,7 @@ class BRB:
         prod2 = thetas_3d * prod[:, :, None]
         ws = np.squeeze(prod2 / (np.sum(prod2, axis=1)[:, :, None] + 1e-9))
 
-        return ws
+        return np.atleast_2d(ws)
 
     def construct_initial_belief_rule_exp_matrix(
         self, rules: np.ndarray, consequents: np.ndarray, fun: Callable
@@ -421,7 +421,8 @@ class BRB:
         return betas
 
     def train(
-        self, xs: np.ndarray, ys: np.ndarray, _trainables: Trainables
+            self, xs: np.ndarray, ys: np.ndarray, _trainables: Trainables, obj_args: Tuple = None,
+            fix_endpoints: bool = True
     ) -> Trainables:
         """Train the BRB using input-output pairs. And update the model's parameters.
 
@@ -434,6 +435,10 @@ class BRB:
             _trainables (Trainables): A named tuple used to construct the
             optimization problem to train the BRB-model. Functions as an
             initial guess for the optimizer as well. See the documentation.
+            obj_args (Tuple): Additional arguments to be supplied to the objective function.
+            fix_endpoints (bool, optional): Whether the first and last
+            precedents for each attribute should be fixed. If False, these
+            values will also be trained. Default: True.
 
         Returns:
             Tainables: A named tuple containg the trained variables in a
@@ -481,7 +486,7 @@ class BRB:
         con_rules = dict(
             type="eq",
             fun=lambda x, start, end: np.sum(
-                x[rules_start : rules_start + n_rules]
+                x[rules_start : (rules_start + n_rules)]
             )
             - 1,
             args=[rules_start, n_rules],
@@ -524,39 +529,42 @@ class BRB:
 
                 cons_precedents.append(con)
 
-                if i == (j + trainables.n_precedents - 1) - 1:
-                    con = dict(
-                        type="eq",
-                        # fun=lambda x: x[i] - _trainables.flat_trainables[i],
-                        fun=lambda x, i, limit: x[i + 1] - limit,
-                        args=[i, _trainables.flat_trainables[i + 1]],
-                    )
-                    cons_precedents.append(con)
+                if fix_endpoints:
+                    if i == (j + trainables.n_precedents - 1) - 1:
+                        con = dict(
+                            type="eq",
+                            fun=lambda x, i, limit: x[i + 1] - limit,
+                            args=[i, _trainables.flat_trainables[i + 1]],
+                        )
+                        cons_precedents.append(con)
 
-                if i == j:
-                    con = dict(
-                        type="eq",
-                        # fun=lambda x: x[i] - _trainables.flat_trainables[i],
-                        fun=lambda x, i, limit: x[i] - limit,
-                        args=[i, _trainables.flat_trainables[i]],
-                    )
-                    cons_precedents.append(con)
+                    if i == j:
+                        con = dict(
+                            type="eq",
+                            fun=lambda x, i, limit: x[i] - limit,
+                            args=[i, _trainables.flat_trainables[i]],
+                        )
+                        cons_precedents.append(con)
 
         all_cons = [con_rules] + cons_betas + cons_precedents
+
+        # prepend obj_args with the trainables and the default arguments, or supplied ones if provided.
+        if obj_args is None:
+            obj_args = (trainables,) + (xs, ys)
+        else:
+            obj_args = (trainables,) + obj_args
 
         opt_res = minimize(
             self._objective,
             trainables.flat_trainables,
-            args=(trainables, xs, ys),
+            args=obj_args,
             # method="L-BFGS-B",
             method="SLSQP",
             bounds=all_bounds,
             constraints=all_cons,
             options={
-                "ftol": 1e-6,
+                "ftol": 1e-8,
                 "disp": True,
-                "maxls": 10,
-                "maxfun": np.inf,
                 "maxiter": 10000,
             },
             callback=lambda _: print("."),
@@ -604,7 +612,13 @@ class BRB:
 
         ys = self._predict_train(xs)
         res = (1 / xs.shape[0]) * np.sum(
-            np.log(np.cosh((ys_bar - ys.reshape(-1, 1))))
+            ((ys_bar - ys.reshape(-1, 1)))**2
+        )
+        return res
+
+    def _default_objective_fun(xs: np.ndarray, ys: np.ndarray):
+        res = (1 / xs.shape[0]) * np.sum(
+            ((ys_bar - ys.reshape(-1, 1)))**2
         )
         return res
 
@@ -777,16 +791,60 @@ def article2():
     plt.show()
 
 
+class BRBPref(BRB):
+    """With a custom objective
+
+    """
+    def _objective(
+        self,
+        flat_trainables: np.ndarray,
+        trainables: Trainables,
+        ref: np.ndarray,
+        extremas: np.ndarray,
+    ):
+        """A helper function that works as the objective for the optimization routine.
+        Computes the total loss of a model with intermediate training parameters generated during
+        optimization.
+
+        """
+        trainables.flat_trainables[:] = flat_trainables
+        (
+            self._train_bre_m,
+            self._train_thetas,
+            self._train_deltas,
+            self._train_precedents,
+        ) = BRB._unflatten_parameters(trainables)
+
+        y = self._predict_train(np.atleast_2d(ref))
+
+        ys_extremas = self._predict_train(extremas)
+
+        penalty = 0.1
+
+        # when maximizing, positive better, negative worse
+        underover = ys_extremas - y
+
+        if ~np.any(underover > 0):
+            y -= np.sum(np.abs(underover[np.nonzero(~np.any(underover > 0))]) * penalty)
+            y = np.max((y, 0))
+
+        # minus since scipy always minimizes
+
+        res = -y
+        return res
+
+
+
 def article1():
     # define the problem and limits for the input
     def f(x):
         return x * np.sin(x ** 2)
 
-    low = 1e-6
+    low = 0
     up = 3
 
     # create training data
-    n_train = 1500
+    n_train = 100
     xs_train = np.sort(np.random.uniform(low, up, (n_train, 1)))
     ys_train = f(xs_train)
 
@@ -800,7 +858,7 @@ def article1():
     consequents = np.array([[-2.5, -1, 1, 2, 3]])
 
     # construct an initial BRB model
-    brb = BRB(precedents, consequents, f=f)
+    brb = BRBPref(precedents, consequents, f=f)
     print("Before training")
 
     # untrained predictions on evaluation data

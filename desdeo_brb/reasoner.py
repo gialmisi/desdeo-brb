@@ -31,33 +31,49 @@ class Reasoner(object):
 
     def __init__(
         self,
-        result: BRBResult,
         input_explats: List[List[str]],
-        output_explats: List[List[str]],
+        output_explats: List[str],
+        attribute_names: List[str],
+        output_name: str
     ):
-        self.result = result
-        # check the dimensions of the input explanations
-        if self.result.precedents.shape == np.asarray(input_explats).shape:
-            self.input_explats = input_explats
-        else:
-            msg = (
-                "Shapes of the precedents and the input explanations don't "
-                "match!"
-            )
-            raise ReasonerException(msg)
+        self.input_explats = input_explats
+        self.output_explats = output_explats
+        self.attribute_names = attribute_names
+        self.output_name = output_name
 
-        # check the dimensions of the output explanations
-        if self.result.consequents.shape == np.asarray(output_explats):
-            self.output_explats = output_explats
-        else:
-            msg = (
-                "Shapes of the consequents and the output explanations "
-                "don't match!"
-            )
-            raise ReasonerException(msg)
+    def explain(self, result: BRBResult):
+        att_n = self.attribute_names
+        pre_b = result.precedents_belief_degrees[0]
+        pre_x = self.input_explats
+        con_n = self.output_name
+        con_b = result.consequent_belief_degrees[0]
+        con_x = self.output_explats
 
-        def explain(self, result: BRBResult):
-            pass
+        inputs = []
+        for i in range(len(att_n)):
+            inputs.append({
+                "what": f"{att_n[i]}",
+                "is": [f"{int(pre_b[i][j]*100)}%  {pre_x[i][j]}" for j in range(len(pre_x[i]))],
+                "ignorance": f"{int((1 - sum(pre_b[i]))*100)}%",
+                })
+
+        output = ({
+            "what": f"{con_n}",
+            "is": [f"{int(con_b[j]*100)}%  {con_x[0][j]}" for j in range(len(con_x[0]))],
+            "ignorance": f"{int((1 - sum(con_b))*100)}%",
+            })
+
+        # form the explanation
+        explanation = (
+            "WITH\n\t\t" +
+            "\n\tAND\n\t\t".join(
+                list((f"{d['what']} BEING {', '.join(d['is'])} WITH {d['ignorance']} ignorance" for d in inputs))
+            ) +
+            "\nFOLLOWS\n\t\t" +
+            f"{output['what']} BEING {', '.join(output['is'])} WITH {output['ignorance']} ignorance"
+        )
+
+        return explanation
 
 
 if __name__ == "__main__":
@@ -65,10 +81,13 @@ if __name__ == "__main__":
         precedents=np.array([[0, 0.5, 1], [1, 2, 3]]),
         precedents_belief_degrees=np.array([[0, 0.2, 0.7], [0.1, 0.2, 0.3]]),
         consequents=np.array([[0, 0.5, 1]]),
-        consequent_belief_degrees=np.array([0, 0.75, 1]),
+        consequent_belief_degrees=np.array([0, 0.75, 0.25]),
     )
     reasoner = Reasoner(
-        result,
-        [["bad", "fair", "good"], ["low", "medium", "high"]],
-        [["poor", "rich", "excellent"]],
+        [[["bad", "fair", "good"], ["low", "medium", "high"]]],
+        [[["poor", "rich", "excellent"]]],
+        ["condition", "price"],
+        "deal quality"
     )
+
+    print(reasoner.explain(result))
