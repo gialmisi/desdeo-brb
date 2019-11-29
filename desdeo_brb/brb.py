@@ -90,6 +90,18 @@ class Trainables(
         return string
 
 
+class Rule(
+    namedtuple(
+        "Rule",
+        [
+            "condition",
+            "action",
+        ]
+        
+)):
+    pass
+
+
 class BRB:
     """Constructs a trainable BRB model.
 
@@ -139,19 +151,25 @@ class BRB:
         rule_weights: Optional[np.ndarray] = None,
         attr_weights: Optional[np.ndarray] = None,
         bre_m: Optional[np.ndarray] = None,
-        f: Optional[Callable] = lambda x: x * np.sin(x ** 2),
+        f: Optional[Callable] = None,
+        rules: Optional[List[Rule]] = None,
         utility: Optional[Callable] = lambda y: y,
     ):
         self.precedents = precedents
         self.consequents = consequents
         self.f = f
         self.utility = utility
+        self.rules = rules
 
-        # construct the initial rule base using the precedents, the consequents,
-        # and the mapping f.
-        self.thetas, self.deltas, self.bre_m = self.construct_inital_rule_base(
-            self.precedents, self.consequents, self.f
-        )
+        if self.f is not None:
+            # construct the initial rule base using the precedents, the consequents,
+            # and the mapping f.
+            self.thetas, self.deltas, self.bre_m = self.construct_inital_rule_base(
+                self.precedents, self.consequents, rule_action_fun=self.f, rules=rules
+            )
+        else:
+            print("Rule mapping must be specified!")
+            exit()
 
         self.trained = False
 
@@ -197,15 +215,23 @@ class BRB:
         """
         alphas = self.belief_distribution(x, precedents)
 
-        rules = self.cartesian_product(alphas)
-        ws = self.calculate_activation_weights(rules, thetas, deltas)
+        if self.rules is None:
+            rule_conditions = self.cartesian_product(alphas)
+            
+        else:
+            conds_1 = alphas[:, [0, 1, 2], [0, 0, 0]]
+            conds_2 = alphas[:, [0, 1, 2], [1, 1, 1]]
+            rule_conditions = np.stack((conds_1, conds_2), axis=1)
+
+        ws = self.calculate_activation_weights(rule_conditions, thetas, deltas)
         betas = self.calculate_combined_belief_degrees(bre_m, ws)
 
         res = BRBResult(precedents, alphas, consequents, betas)
+
         return res
 
     def construct_inital_rule_base(
-        self, precedents: np.ndarray, consequents: np.ndarray, f: Callable
+            self, precedents: np.ndarray, consequents: np.ndarray, rule_action_fun: Optional[Callable] = None, rules: List[Rule] = None,
     ) -> (np.ndarray, np.ndarray, np.ndarray):
         """Constructs the initial rule base using precedents and consequents,
         and a given mapping from input to expected output. See the top level
@@ -213,16 +239,28 @@ class BRB:
 
         Returns:
             (np.ndarray, np.ndarray, np.ndarray): The rule weights, the
-            attibute weights in each rule and the belief rule expression
+            attibute weights in each rule, and the belief rule expression
             matrix.
 
         """
-        rules = self.cartesian_product(precedents)
-        thetas = np.ones((len(np.squeeze(rules)), 1)) / len(np.squeeze(rules))
-        deltas = np.array([1])
-        bre_m = self.construct_initial_belief_rule_exp_matrix(
-            rules, consequents, f
-        )
+        if rules is None:
+            rule_conditions = self.cartesian_product(precedents)
+            thetas = np.ones((len(np.squeeze(rule_conditions)), 1)) / len(np.squeeze(rule_conditions))
+            bre_m = self.construct_initial_belief_rule_exp_matrix(
+            rule_conditions, consequents, rule_action_fun
+            )
+
+        else:
+            thetas = np.ones((len(rules), 1)) / len(rules)
+            # rule_conditions = np.atleast_3d([
+            #     [rule.condition for rule in rules]
+            # ])
+            # rule_actions = np.atleast_2d([
+            #     rule.action for rule in rules
+            # ])
+            bre_m = self.construct_initial_belief_rule_exp_matrix_from_rules(rules, consequents)
+
+        deltas = np.array([1])            
 
         return thetas, deltas, bre_m
 
@@ -355,7 +393,7 @@ class BRB:
         return np.atleast_2d(ws)
 
     def construct_initial_belief_rule_exp_matrix(
-        self, rules: np.ndarray, consequents: np.ndarray, fun: Callable
+        self, rule_conditions: np.ndarray, consequents: np.ndarray, fun: Callable
     ):
         """Calculate the initial belief rule degree matrix using a known mapping
         from input to output on the referential value set. Each row should
@@ -380,8 +418,16 @@ class BRB:
 
         """
         # ys = np.apply_along_axis(fun, 1, rules)
-        ys = fun(rules)
+        ys = fun(rule_conditions)
         return np.squeeze(self.belief_distribution(ys[0], consequents))
+
+    def construct_initial_belief_rule_exp_matrix_from_rules(
+            self, rules: List[Rule], consequents: np.ndarray,
+    ):
+        rule_actions = np.atleast_2d([
+            rule.action for rule in rules
+        ])
+        return np.squeeze(self.belief_distribution(rule_actions, consequents))
 
     def calculate_combined_belief_degrees(
         self, bre: np.ndarray, ws: np.ndarray
@@ -554,6 +600,8 @@ class BRB:
         else:
             obj_args = (trainables,) + obj_args
 
+
+        print(len(obj_args))
         opt_res = minimize(
             self._objective,
             trainables.flat_trainables,
@@ -563,9 +611,9 @@ class BRB:
             bounds=all_bounds,
             constraints=all_cons,
             options={
-                "ftol": 1e-8,
+                "ftol": 1e-6,
                 "disp": True,
-                "maxiter": 10000,
+                "maxiter": 100000,
             },
             callback=lambda _: print("."),
         )
@@ -799,8 +847,8 @@ class BRBPref(BRB):
         self,
         flat_trainables: np.ndarray,
         trainables: Trainables,
-        ref: np.ndarray,
-        extremas: np.ndarray,
+        xs: np.ndarray,
+        ys: np.ndarray
     ):
         """A helper function that works as the objective for the optimization routine.
         Computes the total loss of a model with intermediate training parameters generated during
@@ -815,23 +863,28 @@ class BRBPref(BRB):
             self._train_precedents,
         ) = BRB._unflatten_parameters(trainables)
 
-        y = self._predict_train(np.atleast_2d(ref))
+        # check the monotonicity of the model, assumed ranges 0-1
+        n = 20
+        points = np.ones((n, xs.shape[1]))
+        alpha = 0
+        r = 1
+        for row_i in range(xs.shape[1]):
+            points_ = np.copy(points)
+            points_[:, row_i] = np.linspace(0, 1, n)
+            res = self._predict_train(np.atleast_2d(points_))
+            if not np.all(np.diff(res) > 0):
+                alpha += np.abs(np.sum(np.where(np.diff(res) <= 0, np.diff(res), 0))) / np.count_nonzero(np.diff(res))
+            if not np.all(np.diff(res) < 0):
+                alpha += np.abs(np.sum(np.where(np.diff(res) >= 0, np.diff(res), 0))) / np.count_nonzero(np.diff(res))
 
-        ys_extremas = self._predict_train(extremas)
+        rms = (1/xs.shape[0]) * (np.sum((self._predict_train(xs) - ys.reshape(-1, 1))**2))
+        print(self._predict_train(xs))
+        print(ys.reshape(-1, 1))
 
-        penalty = 0.1
-
-        # when maximizing, positive better, negative worse
-        underover = ys_extremas - y
-
-        if ~np.any(underover > 0):
-            y -= np.sum(np.abs(underover[np.nonzero(~np.any(underover > 0))]) * penalty)
-            y = np.max((y, 0))
-
-        # minus since scipy always minimizes
-
-        res = -y
-        return res
+        # print(f"prediction: {self._predict_train(xs)} actual: {ys.reshape(-1, 1)} diff {self._predict_train(xs) - ys.reshape(-1, 1)}")
+        print(f"RMS: {rms}\t + {alpha}\t = {rms}")
+        return rms
+        # return (rms + r*alpha)
 
 
 
@@ -858,7 +911,7 @@ def article1():
     consequents = np.array([[-2.5, -1, 1, 2, 3]])
 
     # construct an initial BRB model
-    brb = BRBPref(precedents, consequents, f=f)
+    brb = BRB(precedents, consequents, f=f)
     print("Before training")
 
     # untrained predictions on evaluation data
