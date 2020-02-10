@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import numdifftools as nd
 from typing import List, Callable, Optional, Tuple
 from collections import namedtuple
 from scipy.optimize import minimize
@@ -99,6 +100,18 @@ class Rule(
         ]
         
 )):
+    """Specifies a rule with a condition and action.
+
+    The condition is specified in terms of the precedential values. A condition
+    is a list of indices with the index referring to a precedent's referential
+    values. For example, if a rule base has two attributes x1 and x2 with the
+    referential values a01, a01, a10, and a11, the condition [0, 1] means that
+    'if x1 is a01 and x2 is a11 then action' The action itself is specified as
+    a floating point number, which should result as the weighted sum of the
+    combined belief degrees times the consequential reference values in a rule
+    base.
+
+    """
     pass
 
 
@@ -161,11 +174,11 @@ class BRB:
         self.utility = utility
         self.rules = rules
 
-        if self.f is not None:
+        if self.f is not None or self.rules is not None:
             # construct the initial rule base using the precedents, the consequents,
             # and the mapping f.
             self.thetas, self.deltas, self.bre_m = self.construct_inital_rule_base(
-                self.precedents, self.consequents, rule_action_fun=self.f, rules=rules
+                self.precedents, self.consequents, rule_action_fun=self.f, rules=self.rules
             )
         else:
             print("Rule mapping must be specified!")
@@ -216,13 +229,21 @@ class BRB:
         alphas = self.belief_distribution(x, precedents)
 
         if self.rules is None:
+            # no explicit rules, use the cartesian products as the conditions
             rule_conditions = self.cartesian_product(alphas)
             
         else:
-            conds_1 = alphas[:, [0, 1, 2], [0, 0, 0]]
-            conds_2 = alphas[:, [0, 1, 2], [1, 1, 1]]
-            rule_conditions = np.stack((conds_1, conds_2), axis=1)
+            # explicit rules, use them
+            idx = np.linspace(0, len(precedents), len(precedents), endpoint=False, dtype=int)
+            rule_conditions_g = (alphas[:, idx, rule.condition] for rule in self.rules)
+            # conds_1 = alphas[:, idx, [0, 0, 0]]
+            # conds_2 = alphas[:, idx, [1, 1, 1]]
 
+            # rule_conditions = np.stack((conds_1, conds_2), axis=1)
+            # print(f"rule conditions: {rule_conditions}")
+            rule_conditions = np.stack(tuple(rule_conditions_g), axis=1)
+
+        # calculate weights and combined belief degreees
         ws = self.calculate_activation_weights(rule_conditions, thetas, deltas)
         betas = self.calculate_combined_belief_degrees(bre_m, ws)
 
@@ -244,6 +265,8 @@ class BRB:
 
         """
         if rules is None:
+            # construct the rule base using the mapping and the cartesian
+            # products of the precedent reference values.
             rule_conditions = self.cartesian_product(precedents)
             thetas = np.ones((len(np.squeeze(rule_conditions)), 1)) / len(np.squeeze(rule_conditions))
             bre_m = self.construct_initial_belief_rule_exp_matrix(
@@ -251,6 +274,7 @@ class BRB:
             )
 
         else:
+            # use the explicit rules given
             thetas = np.ones((len(rules), 1)) / len(rules)
             # rule_conditions = np.atleast_3d([
             #     [rule.condition for rule in rules]
@@ -570,7 +594,7 @@ class BRB:
                 con = dict(
                     type="ineq",
                     fun=lambda x, i, v: x[i + 1] - x[i] - v,
-                    args=[i, 0.1],
+                    args=[i, 1e-6],
                 )
 
                 cons_precedents.append(con)
@@ -606,16 +630,15 @@ class BRB:
             self._objective,
             trainables.flat_trainables,
             args=obj_args,
-            # method="L-BFGS-B",
             method="SLSQP",
             bounds=all_bounds,
             constraints=all_cons,
             options={
-                "ftol": 1e-6,
+                "ftol": 1e-4,
                 "disp": True,
                 "maxiter": 100000,
             },
-            callback=lambda _: print("."),
+            # callback=lambda _: print("."),
         )
 
         if opt_res.success:
@@ -777,6 +800,67 @@ class BRB:
         )
 
 
+class BRBPref(BRB):
+    """With a custom objective
+
+    """
+    def _objective(
+        self,
+        flat_trainables: np.ndarray,
+        trainables: Trainables,
+        nadir: np.ndarray,
+        ideal: np.ndarray,
+        refs: np.ndarray,
+        ref_targets: np.ndarray,
+    ):
+        """A helper function that works as the objective for the optimization routine.
+        Computes the total loss of a model with intermediate training parameters generated during
+        optimization.
+
+        """
+        trainables.flat_trainables[:] = flat_trainables
+        (
+            self._train_bre_m,
+            self._train_thetas,
+            self._train_deltas,
+            self._train_precedents,
+        ) = BRB._unflatten_parameters(trainables)
+
+        # test the monotonicity of the model, assumed ranges 0-1
+#        col = np.linspace(0, 1, n_test, endpoint=True)
+#        test_points = np.stack(3*(col,)).T
+#        test_res = self._predict_train(test_points)
+#        diff = np.diff(test_res)
+#        is_monotonic = np.all(diff >= 0)
+
+        # works only for 3 objectives!
+        n_test = 6
+        xx = np.mgrid[0:1.1:0.2, 0:1.1:0.2, 0:1.1:0.2].reshape(3, -1).T
+        xx_split = np.array(np.split(xx, n_test*n_test))
+        monotonic_penalty = 0
+
+        for test_points in xx_split:
+            test_res = self._predict_train(test_points)
+            diff = np.diff(test_res)
+            count = np.count_nonzero(diff < 0)
+            monotonic_penalty += count
+
+        ref_penalty = np.sum((self._predict_train(refs) - ref_targets)**2)
+        ideal_penalty = (1 - self._predict_train(ideal))**2
+        nadir_penalty = (self._predict_train(nadir))**2
+        monotonic_penalty /= n_test**3
+
+        print(f"ref_penalty: {ref_penalty} \n"
+              f"ideal_penalty: {ideal_penalty} \n"
+              f"nadir_penalty: {nadir_penalty} \n"
+              f"monotonic_penalty: {monotonic_penalty}"
+        )
+        
+        minime = ref_penalty + ideal_penalty + nadir_penalty + monotonic_penalty
+        print(f"f(x)={minime}")
+
+        return minime
+
 # Testing
 def article2():
     def himmelblau(x):
@@ -837,54 +921,6 @@ def article2():
     plt.plot(np.linspace(0, len(ys), len(ys)), ys_trained, label="Trained")
     plt.legend()
     plt.show()
-
-
-class BRBPref(BRB):
-    """With a custom objective
-
-    """
-    def _objective(
-        self,
-        flat_trainables: np.ndarray,
-        trainables: Trainables,
-        xs: np.ndarray,
-        ys: np.ndarray
-    ):
-        """A helper function that works as the objective for the optimization routine.
-        Computes the total loss of a model with intermediate training parameters generated during
-        optimization.
-
-        """
-        trainables.flat_trainables[:] = flat_trainables
-        (
-            self._train_bre_m,
-            self._train_thetas,
-            self._train_deltas,
-            self._train_precedents,
-        ) = BRB._unflatten_parameters(trainables)
-
-        # check the monotonicity of the model, assumed ranges 0-1
-        n = 20
-        points = np.ones((n, xs.shape[1]))
-        alpha = 0
-        r = 1
-        for row_i in range(xs.shape[1]):
-            points_ = np.copy(points)
-            points_[:, row_i] = np.linspace(0, 1, n)
-            res = self._predict_train(np.atleast_2d(points_))
-            if not np.all(np.diff(res) > 0):
-                alpha += np.abs(np.sum(np.where(np.diff(res) <= 0, np.diff(res), 0))) / np.count_nonzero(np.diff(res))
-            if not np.all(np.diff(res) < 0):
-                alpha += np.abs(np.sum(np.where(np.diff(res) >= 0, np.diff(res), 0))) / np.count_nonzero(np.diff(res))
-
-        rms = (1/xs.shape[0]) * (np.sum((self._predict_train(xs) - ys.reshape(-1, 1))**2))
-        print(self._predict_train(xs))
-        print(ys.reshape(-1, 1))
-
-        # print(f"prediction: {self._predict_train(xs)} actual: {ys.reshape(-1, 1)} diff {self._predict_train(xs) - ys.reshape(-1, 1)}")
-        print(f"RMS: {rms}\t + {alpha}\t = {rms}")
-        return rms
-        # return (rms + r*alpha)
 
 
 
