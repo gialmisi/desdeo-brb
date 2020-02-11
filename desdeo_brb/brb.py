@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import numdifftools as nd
 from typing import List, Callable, Optional, Tuple
 from collections import namedtuple
 from scipy.optimize import minimize
@@ -625,7 +624,6 @@ class BRB:
             obj_args = (trainables,) + obj_args
 
 
-        print(len(obj_args))
         opt_res = minimize(
             self._objective,
             trainables.flat_trainables,
@@ -634,9 +632,10 @@ class BRB:
             bounds=all_bounds,
             constraints=all_cons,
             options={
-                "ftol": 1e-4,
+                "ftol": 1e-5,
                 "disp": True,
                 "maxiter": 100000,
+                "eps": 1e-2,
             },
             # callback=lambda _: print("."),
         )
@@ -810,8 +809,9 @@ class BRBPref(BRB):
         trainables: Trainables,
         nadir: np.ndarray,
         ideal: np.ndarray,
-        refs: np.ndarray,
-        ref_targets: np.ndarray,
+        refs: np.ndarray = None,
+        ref_targets: np.ndarray = None,
+        dm_choices = None
     ):
         """A helper function that works as the objective for the optimization routine.
         Computes the total loss of a model with intermediate training parameters generated during
@@ -826,14 +826,31 @@ class BRBPref(BRB):
             self._train_precedents,
         ) = BRB._unflatten_parameters(trainables)
 
-        # test the monotonicity of the model, assumed ranges 0-1
-#        col = np.linspace(0, 1, n_test, endpoint=True)
-#        test_points = np.stack(3*(col,)).T
-#        test_res = self._predict_train(test_points)
-#        diff = np.diff(test_res)
-#        is_monotonic = np.all(diff >= 0)
+        delta = 0.05
+        dm_penalty = 0
+        if dm_choices is not None:
+            for choice in dm_choices:
+                fst = self._predict_train(np.atleast_2d(choice[0]))[0]
+                snd = self._predict_train(np.atleast_2d(choice[1]))[0]
+                pref = choice[-1]
 
-        # works only for 3 objectives!
+                if pref == 1:
+                    if fst < snd:
+                        dm_penalty += abs(fst - snd)
+
+                elif pref == 2:
+                    if fst > snd:
+                        dm_penalty += abs(fst - snd)
+
+                elif pref == 0:
+                    if np.abs(fst - snd) > delta:
+                        dm_penalty += abs(fst - snd)
+                else:
+                    print("Something went horribly wrong")
+                    exit()
+
+            #dm_penalty /= len(dm_choices)
+
         n_test = 6
         xx = np.mgrid[0:1.1:0.2, 0:1.1:0.2, 0:1.1:0.2].reshape(3, -1).T
         xx_split = np.array(np.split(xx, n_test*n_test))
@@ -845,7 +862,17 @@ class BRBPref(BRB):
             count = np.count_nonzero(diff < 0)
             monotonic_penalty += count
 
-        ref_penalty = np.sum((self._predict_train(refs) - ref_targets)**2)
+        ref_penalty = 0
+        if refs is not None:
+            ref_diff = np.abs(self._predict_train(refs) - ref_targets)
+            ref_penalty = np.sum(
+                np.where(ref_diff <= delta,
+                        0,
+                        ref_diff
+                )
+            )
+        # ref_penalty /= len(refs)
+
         ideal_penalty = (1 - self._predict_train(ideal))**2
         nadir_penalty = (self._predict_train(nadir))**2
         monotonic_penalty /= n_test**3
@@ -853,11 +880,12 @@ class BRBPref(BRB):
         print(f"ref_penalty: {ref_penalty} \n"
               f"ideal_penalty: {ideal_penalty} \n"
               f"nadir_penalty: {nadir_penalty} \n"
-              f"monotonic_penalty: {monotonic_penalty}"
+              f"monotonic_penalty: {monotonic_penalty} \n"
+              f"dm_penalty: {dm_penalty}"
         )
         
-        minime = ref_penalty + ideal_penalty + nadir_penalty + monotonic_penalty
-        print(f"f(x)={minime}")
+        minime = ref_penalty + ideal_penalty + nadir_penalty + monotonic_penalty + dm_penalty
+        print(f"f(x)={minime[0]}")
 
         return minime
 

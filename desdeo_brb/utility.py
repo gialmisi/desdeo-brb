@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 from brb import BRB
 from typing import List, Tuple
 from sklearn.preprocessing import MinMaxScaler as sklearn_minmax_scaler
+import matplotlib
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 unused import
+import matplotlib.cm as cmx
+
 
 
 def load_and_scale_data(dir_path, fname_po, fname_pf):
@@ -47,14 +51,19 @@ def load_and_scale_data(dir_path, fname_po, fname_pf):
     return scaled_nadir, scaled_ideal, scaled_pf, scaled_po, scaler
 
 
-def plot_utility_monotonicity(brb: BRB, limits: List[Tuple[float, float]], n=50):
+def plot_utility_monotonicity(brb: BRB, limits: List[Tuple[float, float]], n=50, fig=None):
     """Plots the monotonicity of a BRB sytem by varying one of the attribtutes
     and keeping the others constant. The constant value is set to be the middle
     point between the minimum and maximum values for each attribute.
 
     """
     mid_points = np.array([0, 0.25, 0.5, 0.75, 1])
-    fig, axs = plt.subplots(1, len(limits))    
+
+    if fig is None:
+        fig = plt.figure()
+
+    axs = [fig.add_subplot(1, 3, i+1) for i in range(len(limits))]
+
     fig.suptitle("Monotonicity of the utility model")
 
     for (k, mid_point) in enumerate(mid_points):
@@ -77,18 +86,19 @@ def plot_utility_monotonicity(brb: BRB, limits: List[Tuple[float, float]], n=50)
                 axs[i].set_xlabel(f"Attribute {i+1}")
                 axs[i].set_ylabel("Utility")
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.legend()
-    plt.draw()
+    axs[-1].legend(loc="center left", bbox_to_anchor=(1, 0.5), prop={"size": 8})
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    return fig
 
 
-def plot_3d_ranks_colored(brb, paretofront):
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 unused import
-    import matplotlib
-    import matplotlib.cm as cmx
+def plot_3d_ranks_colored(brb, paretofront, fig=None):
+    if fig is None:
+        fig = plt.figure()
 
-    fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
+    fig.suptitle("Ranking of the Pareto solutions")
 
     res_pf = brb.predict(paretofront)
     score_pf = np.sum(res_pf.consequents * res_pf.consequent_belief_degrees, axis=1)
@@ -105,7 +115,23 @@ def plot_3d_ranks_colored(brb, paretofront):
     ax.set_xlabel("Income")
     ax.set_ylabel("Carbon")
     ax.set_zlabel("CHSI")
-    plt.draw()
+
+    return fig
+
+
+def simple_mapping(x):
+    if x.ndim == 3:
+        x = np.squeeze(x)
+
+    return np.atleast_3d(np.sum(x, axis=1) / 3)
+
+
+def brb_score(brb, paretofront):
+    res_pf = brb.predict(paretofront)
+    score_pf = np.sum(res_pf.consequents * res_pf.consequent_belief_degrees, axis=1)
+
+    return score_pf
+
 
 def main():
    pass
