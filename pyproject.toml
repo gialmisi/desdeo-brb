@@ -17,6 +17,10 @@ jupyter = "^1.0"
 numba = "^0.46.0"
 sklearn = "^0.0.0"
 numdifftools = "^0.9.39"
+dill = "^0.3.1"
+jax = "^0.1.59"
+jaxlib = "^0.1.39"
+algopy = "^0.5.7"
 
 [tool.poetry.dev-dependencies]
 pytest = "^3.0"

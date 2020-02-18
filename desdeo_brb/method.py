@@ -3,6 +3,8 @@ import tkinter as tk
 import tkinter.ttk as ttk
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.backends.backend_tkagg as tkagg
+import pandas
+from pandas.plotting import parallel_coordinates
 
 import matplotlib
 matplotlib.use("tkagg")
@@ -21,8 +23,10 @@ const_font_size = 12
 const_fontsetting = (const_font, const_font_size)
 variant = 1
 
+objective_names = ["Income", "Stored CO2", "CHSI"]
 
-def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = ["Income", "Stored CO2", "CHSI"]):
+
+def method(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = objective_names):
     # setup tkinter app instance
     window = tk.Tk()
     window.title(f"INFRINGER - Variant {variant}")
@@ -212,7 +216,7 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
         pf_scores_std = np.std(pf_scores)
 
         # show pairs to compare and asses fitness  of model
-        dm_choices = ask_preference(window, brb, paretofront, scaler)
+        dm_choices = ask_preference(window, brb, paretofront, scaler, nadir=nadir, ideal=ideal)
 
         # check compatibility
         fitness, brb_choices = calculate_fitness(window, brb, dm_choices) 
@@ -271,6 +275,9 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
         no_btn = tk.Button(window, text="Cancel", command=close_window)
         no_btn.grid(row=4, column=2)
 
+        btn_plot = tk.Button(window, text="Plot", command=lambda: draw_parallel(points_to_compare, obj_names=objective_names))
+        btn_plot.grid(row=4, column=4)
+
         global candidate_scores
         candidate_scores = None
         def check_scores():
@@ -312,7 +319,8 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
                 obj_args=(np.atleast_2d(nadir),
                             np.atleast_2d(ideal),
                             np.atleast_2d(points_to_compare),
-                            np.atleast_2d(candidate_scores))
+                            np.atleast_2d(candidate_scores)),
+                  use_de=True,
         )
 
         print(brb)
@@ -321,7 +329,7 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
 
     if variant == 2:
         # check fitness again
-        dm_choices = ask_preference(window, brb, paretofront, scaler)
+        dm_choices = ask_preference(window, brb, paretofront, scaler, nadir=nadir, ideal=ideal)
         fitness, brb_choices = calculate_fitness(window, brb, dm_choices)
 
         if fitness >= 80:
@@ -341,7 +349,8 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
                             np.atleast_2d(ideal),
                             None,
                             None,
-                            dm_choices)
+                            dm_choices),
+                  use_de=True,
         )
 
     while True:
@@ -363,7 +372,7 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
         [child.destroy() for child in window.winfo_children()]
 
         # check fitness again
-        dm_choices = ask_preference(window, brb, paretofront, scaler)
+        dm_choices = ask_preference(window, brb, paretofront, scaler, nadir=nadir, deal=ideal)
         fitness, brb_choices = calculate_fitness(window, brb, dm_choices)
 
         if fitness >= 80:
@@ -384,7 +393,8 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
                                 np.atleast_2d(ideal),
                                 np.atleast_2d(points_to_compare),
                                 np.atleast_2d(candidate_scores),
-                                dm_choices)
+                                dm_choices),
+                      use_de=True,
             )
         if variant == 2:
             brb.train(None,
@@ -394,7 +404,8 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
                                 np.atleast_2d(ideal),
                                 None,
                                 None,
-                                dm_choices)
+                                dm_choices),
+                      use_de=True,
             )
 
         print(brb)
@@ -402,7 +413,7 @@ def method1(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = 
     return 0
 
 
-def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", "Stored CO2", "CHSI"]):
+def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", "Stored CO2", "CHSI"], nadir=None, ideal=None):
     frame_comp = tk.Frame(window)
     frame_comp.grid(row=0)
 
@@ -411,7 +422,7 @@ def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", 
     lbl_title.grid(row=0, columnspan=7)
 
     btn_quit = tk.Button(frame_comp, text="Quit", command=lambda: quit(window))
-    btn_quit.grid(row=8)
+    btn_quit.grid(row=8, column=1)
 
 
     pairs = []
@@ -438,26 +449,28 @@ def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", 
 
     cbs = []
     for i in range(len(target_candidates_fst)):
+        lbl_name = tk.Label(frame_comp, text=f"Candidates {i+1}")
+        lbl_name.grid(row=i+2, column=0)
         # each row
         if i == 0:
             for k, name in enumerate(objective_names):
                 lbl_name = tk.Label(frame_comp, text=name)
-                lbl_name.grid(row=1, column=k)
+                lbl_name.grid(row=1, column=k+1)
 
                 lbl_name = tk.Label(frame_comp, text=name)
-                lbl_name.grid(row=1, column=k+1+len(target_candidates_fst[0]))
+                lbl_name.grid(row=1, column=k+2+len(target_candidates_fst[0]))
 
         for j in range(len(target_candidates_fst[0])):
             # each column
             lbl = tk.Label(frame_comp,
                            text=f"{np.format_float_scientific(target_candidates_fst[i, j], precision=5)}",
                            font=const_fontsetting, relief="ridge")
-            lbl.grid(row=2+i, column=j, sticky="we", padx=5, pady=2.5)
+            lbl.grid(row=2+i, column=j+1, sticky="we", padx=5, pady=2.5)
 
         cb_choice = ttk.Combobox(frame_comp, font=const_fontsetting, state="readonly", justify=tk.CENTER)
         cb_choice["values"] = ("is better than", "is worse than", "is as good as")
         cb_choice.current(2)
-        cb_choice.grid(row=2+i, column=len(target_candidates_fst[0]),
+        cb_choice.grid(row=2+i, column=1+len(target_candidates_fst[0]),
                        sticky="we", padx=5, pady=2.5)
         cbs.append(cb_choice)
 
@@ -466,7 +479,17 @@ def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", 
             lbl = tk.Label(frame_comp,
                            text=f"{np.format_float_scientific(target_candidates_snd[i, j], precision=5)}",
                            font=const_fontsetting, relief="ridge")
-            lbl.grid(row=2+i, column=j+1+len(target_candidates_snd[0]), sticky="we", padx=5, pady=2.5)
+            lbl.grid(row=2+i, column=j+2+len(target_candidates_snd[0]), sticky="we", padx=5, pady=2.5)
+
+        btn_show = tk.Button(frame_comp, text="Plot",
+                             command=lambda i=i:
+                             draw_radial(np.stack((target_candidates_fst_[i], target_candidates_snd_[i])),
+                             name=f"Candidates {i+1}",
+                             nadir=nadir,
+                             ideal=ideal,
+                             
+        ))
+        btn_show.grid(row=2+i, column=2*len(target_candidates_fst[0])+3, sticky="we", padx=5, pady=2.5)
 
     global choices
     choices = []
@@ -489,7 +512,7 @@ def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", 
                 
 
     btn_next = tk.Button(frame_comp, text="Next", command=lambda: get_choices(cbs))
-    btn_next.grid(row=8, column=len(objective_names), sticky="we")
+    btn_next.grid(row=8, column=len(objective_names)+1, sticky="we")
 
     window.mainloop()
 
@@ -573,11 +596,107 @@ def draw_utility(window, brb):
     return True
 
 
+def draw_radial(candidates, name=None, nadir=None, ideal=None):
+    window = tk.Tk()
+    window.title(f"Candidate comparison")
+
+    fig_radial = plt.figure(figsize=(5, 4), dpi=160)
+    canvas_res = tkagg.FigureCanvasTkAgg(fig_radial, master=window)
+
+    if name is not None:
+        fig_radial.suptitle(name)
+
+    data = np.zeros((candidates.shape[0], candidates.shape[1]+1))
+    data[:, :-1] = candidates
+    data[:, -1] = candidates[:, 0]
+
+    n_vars = candidates.shape[1]
+
+    angles = [n/n_vars*2*np.pi for n in range(n_vars)]
+    angles += angles[:1]
+
+    ax = fig_radial.add_subplot(111, polar=True)
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    plt.xticks(angles[:-1], objective_names)
+
+    ax.set_rlabel_position(0)
+    plt.yticks([0, 1], ["nadir", "ideal"], color="grey", size=7)
+    plt.ylim(-.25, 1)
+
+    ax.plot(angles, data[0], linewidth=1, linestyle="solid", label="Candidate 1")
+    ax.fill(angles, data[0], "b", alpha=0.1)
+    ax.plot(angles, data[1], linewidth=1, linestyle="solid", label="Candidate 2")
+    ax.fill(angles, data[1], "r", alpha=0.1)
+
+    ax.legend(loc="upper right", bbox_to_anchor=(0.1, 0.1))
+
+    fig_radial.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    canvas_res.draw()
+    canvas_res.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+    toolbar_res = tkagg.NavigationToolbar2Tk(canvas_res, window)
+    toolbar_res.update()
+    canvas_res.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+    btn_close = tk.Button(window, text="Close", command=lambda: window.destroy())
+    btn_close.pack(side=tk.BOTTOM, fill=tk.X)
+
+    return True
+
+
+def draw_parallel(candidates, obj_names=["INCOME", "CO2", "CHSI"]):
+    window = tk.Tk()
+    window.title(f"Candidate comparison")
+
+    fig_par = plt.figure(figsize=(7, 4), dpi=160)
+    canvas_res = tkagg.FigureCanvasTkAgg(fig_par, master=window)
+    
+    fig_par.suptitle("Candidate comparison")
+    ax = fig_par.add_subplot(111)
+    
+    df = pandas.DataFrame(data=candidates,
+                        index=[f"Candidate {i+1}" for i in range(len(candidates))],
+                        columns=obj_names).reset_index()
+
+
+    if len(candidates) == 5:
+        parallel_coordinates(df, "index", ax=ax, colors=["red", "green", "grey", "blue", "orange"])
+    else:
+        parallel_coordinates(df, "index", ax=ax)
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0, 0.25, 0.5, 0.75, 1])
+    ax.set_yticklabels(["nadir", "", "", "", "ideal"])
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0, box.width*0.65, box.height])
+    legend_x = 1
+    legend_y = 0.5
+    ax.legend(loc="center left", bbox_to_anchor=(legend_x, legend_y))
+
+    canvas_res.draw()
+    canvas_res.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+    toolbar_res = tkagg.NavigationToolbar2Tk(canvas_res, window)
+    toolbar_res.update()
+    canvas_res.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+    btn_close = tk.Button(window, text="Close", command=lambda: window.destroy())
+    btn_close.pack(side=tk.BOTTOM, fill=tk.X)
+
+    return True
+
+
 def quit(window):
     window.quit()
 
 
 if __name__=="__main__":
-    method1("/home/kilo/workspace/forest-opt/data/",
+    #candidates = np.array([[0.5, 0.75, 0.25],
+    #                       [0.22, 0.55, 0.82]])
+    #draw_radial(candidates)
+    method("/home/kilo/workspace/forest-opt/data/",
             "payoff.dat",
             "test_run.dat")

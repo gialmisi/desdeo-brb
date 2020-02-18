@@ -126,6 +126,13 @@ def simple_mapping(x):
     return np.atleast_3d(np.sum(x, axis=1) / 3)
 
 
+def const_mapping(x):
+    if x.ndim == 3:
+        x = np.squeeze(x)
+
+    return np.atleast_3d(np.repeat(0.5, len(x)))
+
+
 def brb_score(brb, paretofront):
     res_pf = brb.predict(paretofront)
     score_pf = np.sum(res_pf.consequents * res_pf.consequent_belief_degrees, axis=1)

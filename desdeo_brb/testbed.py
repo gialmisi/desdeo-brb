@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler as sklearn_minmax_scaler
 from brb import BRB, BRBPref, Rule
-from utility import load_and_scale_data, plot_utility_monotonicity, plot_3d_ranks_colored
+from utility import load_and_scale_data, plot_utility_monotonicity, plot_3d_ranks_colored, const_mapping
 from reasoner import Reasoner
 from typing import List, Tuple
 
@@ -26,7 +26,8 @@ def main():
     print("consequents\n", consequents)
 
     # construct BRB
-    brb = BRBPref(precedents, consequents, f=lambda x: simple_mapping(x))
+
+    brb = BRBPref(precedents, consequents, f=simple_mapping, utility=utility)
     print(brb)
 
     refs = []
@@ -64,7 +65,7 @@ def main():
         refs.append(paretofront[best_pf_ind])
         ref_scores.append(user_score)
 
-        brb.train(None, None, brb._flatten_parameters(), obj_args=(nadir, ideal, np.atleast_2d(refs), np.atleast_2d(ref_scores)))
+        brb.train(None, None, brb._flatten_parameters(), obj_args=(nadir, ideal, np.atleast_2d(refs), np.atleast_2d(ref_scores)), use_de=True)
 
         plot_utility_monotonicity(brb, [(0, 1), (0, 1), (0, 1)])
 
@@ -96,6 +97,8 @@ def main():
     # axs[2].set_title("Carbon and AHSI")
     # axs[2].legend()
 
+def utility(y):
+    return y
 
 def simple_mapping(x):
     if x.ndim == 3:

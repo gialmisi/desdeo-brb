@@ -1,8 +1,17 @@
 import numpy as np
 import pandas as pd
+from time import sleep
+import numdifftools.nd_scipy as nd
+#import numdifftools as nd
+
 from typing import List, Callable, Optional, Tuple
 from collections import namedtuple
-from scipy.optimize import minimize
+from scipy.optimize import (minimize,
+                            NonlinearConstraint,
+                            differential_evolution,
+                            Bounds,
+                            shgo,
+                            basinhopping,)
 import matplotlib.pyplot as plt
 from copy import copy
 from sklearn.utils.extmath import cartesian as sklearn_cartesian
@@ -491,7 +500,7 @@ class BRB:
 
     def train(
             self, xs: np.ndarray, ys: np.ndarray, _trainables: Trainables, obj_args: Tuple = None,
-            fix_endpoints: bool = True
+            fix_endpoints: bool = True, use_de: bool = False
     ) -> Trainables:
         """Train the BRB using input-output pairs. And update the model's parameters.
 
@@ -508,6 +517,8 @@ class BRB:
             fix_endpoints (bool, optional): Whether the first and last
             precedents for each attribute should be fixed. If False, these
             values will also be trained. Default: True.
+            use_de (bool, Optional): If false, uses a local solver, like SLSQP. Otherwise
+            use differential evolution.
 
         Returns:
             Tainables: A named tuple containg the trained variables in a
@@ -617,6 +628,73 @@ class BRB:
 
         all_cons = [con_rules] + cons_betas + cons_precedents
 
+        if use_de:
+            # define constraints to be used in differential evolution
+            eq_cons = [con for con in all_cons if con["type"]=="eq"]
+            ineq_cons = [con for con in all_cons if con["type"]=="ineq"]
+            
+            eq_fs = []
+            ineq_fs = []
+            for con in eq_cons:
+                def f(x, con=con):
+                    return np.abs(con["fun"](x, *con["args"]))
+                eq_fs.append(f)
+
+            eq_limits_low = np.repeat(0, len(eq_cons))
+            eq_limits_up = np.repeat(0.001, len(eq_cons))
+            eq_limits_relaxed = np.stack((eq_limits_low, eq_limits_up)).T
+            eq_limits_strict = np.zeros((len(eq_cons), 2))
+
+            for con in ineq_cons:
+                def f(x, con=con):
+                    return con["fun"](x, *con["args"])
+
+                ineq_fs.append(f)
+
+            ineq_limits_low = np.repeat(0, len(ineq_cons))
+            ineq_limits_up = np.repeat(np.inf, len(ineq_cons))
+            ineq_limits = np.stack((ineq_limits_low, ineq_limits_up)).T
+
+            nlc_limits_relaxed = np.vstack((eq_limits_relaxed, ineq_limits))
+
+            def constr_f_all(x, eq_fs=eq_fs, ineq_fs=ineq_fs):
+                eq_res = np.array([f(x) for f in eq_fs])
+                ineq_res = np.array([f(x) for f in ineq_fs])
+                res = np.hstack((eq_res, ineq_res))
+                return res
+
+            nlc_relaxed = NonlinearConstraint(constr_f_all,
+                                              nlc_limits_relaxed[:, 0],
+                                              nlc_limits_relaxed[:, 1],
+                                              keep_feasible=True,
+                                              jac="3-point")
+
+            def constr_f_eq(x, eq_fs=eq_fs):
+                eq_res = np.array([f(x) for f in eq_fs])
+                return eq_res
+
+            def constr_f_ineq(x, ineq_fs=ineq_fs):
+                ineq_res = np.array([f(x) for f in ineq_fs])
+                return ineq_res
+
+            nlc_strict_eq = NonlinearConstraint(constr_f_eq,
+                                                eq_limits_strict[:, 0],
+                                                eq_limits_strict[:, 1],
+                                                keep_feasible=True,
+                                                jac="3-point")
+            
+            nlc_strict_ineq = NonlinearConstraint(constr_f_ineq,
+                                                  ineq_limits_low,
+                                                  ineq_limits_up,
+                                                  keep_feasible=True,
+                                                  jac="3-point")
+
+            bounds_de = np.array(all_bounds)
+            #bounds_de[bounds_de == np.inf] = 1
+            #bounds_de[bounds_de == 0] = 1e-9
+            #bounds_de[bounds_de == -np.inf] = 0
+            bounds_de = Bounds(bounds_de[:, 0], bounds_de[:, 1], keep_feasible=True)
+
         # prepend obj_args with the trainables and the default arguments, or supplied ones if provided.
         if obj_args is None:
             obj_args = (trainables,) + (xs, ys)
@@ -624,21 +702,161 @@ class BRB:
             obj_args = (trainables,) + obj_args
 
 
-        opt_res = minimize(
-            self._objective,
-            trainables.flat_trainables,
-            args=obj_args,
-            method="SLSQP",
-            bounds=all_bounds,
-            constraints=all_cons,
-            options={
-                "ftol": 1e-5,
-                "disp": True,
-                "maxiter": 100000,
-                "eps": 1e-2,
-            },
-            # callback=lambda _: print("."),
-        )
+        if not use_de:
+            opt_res = minimize(
+                self._objective,
+                trainables.flat_trainables,
+                args=obj_args,
+                method="SLSQP",
+                bounds=all_bounds,
+                constraints=all_cons,
+                options={
+                    "ftol": 1e-5,
+                    "disp": True,
+                    "maxiter": 100000,
+                    "eps": 1e-5,
+                },
+                # callback=lambda _: print("."),
+            )
+
+        else:
+            def callback(x, convergence):
+                bounds = (bounds_de.lb <= x) & (bounds_de.ub >= x)
+                if np.all(bounds):
+                    constr = nlc_relaxed.fun(x)
+                    if np.min(constr) >= 0:
+                        res = self._objective(x, *obj_args)
+                        if res < 0.01:
+                            print(res)
+                            return True
+
+            #initial = np.repeat(trainables.flat_trainables[None, :],
+                                #20, axis=0)
+#
+            #rand = np.random.uniform(-0.01, 0.01, size=initial.shape)
+            #rand = trainables.flat_trainables + rand
+            #rand[0] = trainables.flat_trainables
+#
+            #print(rand)
+            #input()
+
+            #def check(x):
+                #constrs = np.apply_along_axis(nlc_relaxed.fun, 1, x)
+                #return np.all(constrs >= 0, axis=1)
+#
+#
+            #n_to_find = 100
+            #feasibles = np.zeros((0, 252))
+            #minimum = 1
+            #while True:
+                #trial = np.random.uniform(bounds_de.lb, bounds_de.ub, size=(1000, len(trainables.flat_trainables)))
+                #mask = check(trial)
+                #if not np.all(mask):
+                    ##feasibles = np.append(feasibles, trial[mask], axis=0)
+                    #feasibles = trial[mask]
+                    #results = np.apply_along_axis(lambda x: self._objective(x, *obj_args), 1, feasibles)
+                    #iter_best = results[np.argmin(results)]
+                    #print(iter_best)
+#
+                    #if iter_best < minimum:
+                        #best = feasibles[np.argmin(results)]
+                        #break
+#
+            ## feasibles[-1] = trainables.flat_trainables
+            #print(best)
+
+            #de_res = differential_evolution(
+                #self._objective,
+                #bounds_de,
+                #args=obj_args,
+                #constraints=nlc_relaxed,
+                ##popsize=1,
+                #mutation=(0, 1.99),
+                #recombination=0.95,
+                #disp=True,
+                #maxiter=10000,
+                ##atol=10,
+                ##tol=0,
+                ##tol=0.001,
+                ##atol=0,
+                #strategy="best1exp",
+                ##strategy="best2bin",
+                ##init="latinhypercube",
+                #init=feasibles,
+                #polish=False,
+                ## callback=callback,
+                #seed=1,
+            #)
+
+            #de_res = shgo(
+                #self._objective,
+                #all_bounds,
+                #args=obj_args,
+                #constraints=all_cons,
+                #callback=lambda x: print("hello"),
+                #options={
+                    #"disp": True,
+                #}
+            #)
+
+            def callback(x, convergence=None):
+                res = self._objective(x, *obj_args, print_res=True)
+                print(f"f(x)={res}")
+
+            def grad(x, *args):
+                res = nd.Gradient(lambda y, *_, **__: self._objective(y, *args), method="central", bounds=(bounds_de.lb, bounds_de.ub), step=0.1)
+                return res(x)
+
+            opt_res = minimize(
+                self._objective,
+                trainables.flat_trainables,
+                args=obj_args,
+                method="SLSQP",
+                bounds=bounds_de,
+                constraints=(nlc_strict_eq, nlc_strict_ineq),
+                # jac=grad,
+                options={
+                    "ftol": 1e-6,
+                    "disp": True,
+                    "maxiter": 100000,
+                    # "eps": 1e-2,
+                },
+                callback=callback,
+            )
+                #callback=callback,
+                #options={
+                    #"ftol": 1e-6,
+                    #"disp": True,
+                    #"maxiter": 100000,
+                    #"eps": 1e-6,
+                #},
+                ## callback=lambda _: print("."),
+                #)
+            #minimizer_args = {
+                #"method": "SLSQP",
+                #"args": obj_args,
+                #"constraints": all_cons,
+            #}
+            #opt_res = basinhopping(
+                #self._objective,
+                #trainables.flat_trainables,
+                #minimizer_kwargs=minimizer_args,
+            #)
+            #opt_res = shgo(
+                #self._objective,
+                #bounds_de,
+                #args=obj_args,
+                #constraints=(nlc_strict_eq, nlc_strict_ineq),
+                #n=1,
+                #callback=lambda x: print("hello"),
+                #options={
+                    #"disp": True,
+                    #"maxfev": 10,
+                    #"maxev": 10,
+                    #"maxtime": 0.005,
+                    #"f_min": 1e-6,
+                #}
+            #)
 
         if opt_res.success:
             print("Training successfull!")
@@ -684,13 +902,13 @@ class BRB:
         res = (1 / xs.shape[0]) * np.sum(
             ((ys_bar - ys.reshape(-1, 1)))**2
         )
-        return res
+        return (res)
 
     def _default_objective_fun(xs: np.ndarray, ys: np.ndarray):
         res = (1 / xs.shape[0]) * np.sum(
             ((ys_bar - ys.reshape(-1, 1)))**2
         )
-        return res
+        return (res)
 
     def _flatten_parameters(self) -> Trainables:
         """Flattens the parameters of the current BRB model so that they can be
@@ -811,13 +1029,15 @@ class BRBPref(BRB):
         ideal: np.ndarray,
         refs: np.ndarray = None,
         ref_targets: np.ndarray = None,
-        dm_choices = None
+        dm_choices = None,
+        print_res=False,
     ):
         """A helper function that works as the objective for the optimization routine.
         Computes the total loss of a model with intermediate training parameters generated during
         optimization.
 
         """
+
         trainables.flat_trainables[:] = flat_trainables
         (
             self._train_bre_m,
@@ -826,7 +1046,7 @@ class BRBPref(BRB):
             self._train_precedents,
         ) = BRB._unflatten_parameters(trainables)
 
-        delta = 0.05
+        delta = 0.01
         dm_penalty = 0
         if dm_choices is not None:
             for choice in dm_choices:
@@ -849,18 +1069,44 @@ class BRBPref(BRB):
                     print("Something went horribly wrong")
                     exit()
 
-            #dm_penalty /= len(dm_choices)
+            dm_penalty /= len(dm_choices)
 
-        n_test = 6
-        xx = np.mgrid[0:1.1:0.2, 0:1.1:0.2, 0:1.1:0.2].reshape(3, -1).T
-        xx_split = np.array(np.split(xx, n_test*n_test))
-        monotonic_penalty = 0
+        #n_test = 6
+        #xx = np.mgrid[0:1.1:0.2, 0:1.1:0.2, 0:1.1:0.2].reshape(3, -1).T
+        #xx_split = np.array(np.split(xx, n_test*n_test))
+        #monotonic_penalty = 0
+#
+        #for test_points in xx_split:
+            #test_res = self._predict_train(test_points)
+            #diff = np.diff(test_res)
+            #count = np.count_nonzero(diff < 0)
+            #monotonic_penalty += count
 
-        for test_points in xx_split:
-            test_res = self._predict_train(test_points)
-            diff = np.diff(test_res)
-            count = np.count_nonzero(diff < 0)
-            monotonic_penalty += count
+        # test if monotonically non-decreasing BRB model
+        obj_dim = nadir.shape[1]
+        n_single_dim = 6
+        n_test_samples = n_single_dim**(obj_dim)
+        #np.random.seed(1)
+        #xs_a = np.random.uniform(1e-9, 1, size=(n_test_samples, nadir.shape[1]))
+        #xs_b = np.random.uniform(1e-9, 1, size=(n_test_samples, nadir.shape[1]))
+
+        a = np.linspace(1e-9, 1, n_single_dim, endpoint=True)
+        b = np.linspace(1e-9 + a[1] - a[0], 1, n_single_dim, endpoint=False)
+        xs_a = np.vstack(np.meshgrid(*np.repeat(a[None, :], obj_dim, axis=0))).reshape(obj_dim, -1).T
+        xs_b = np.vstack(np.meshgrid(*np.repeat(b[None, :], obj_dim, axis=0))).reshape(obj_dim, -1).T
+
+        lhs = np.all(xs_a <= xs_b, axis=1)
+        res_a = self._predict_train(xs_a)
+        res_b = self._predict_train(xs_b)
+        rhs = res_a <= res_b
+
+        # for all x_a in xs_a and x_b in xs_b: for all elements in x_a and x_b:
+        # x_a <= x_b, then f(x_a) <= f(x_b) => f is monotonically non-decreasing
+        material_impl = ~lhs | rhs
+
+        monotonic_penalty = np.count_nonzero(~material_impl) / n_test_samples
+        #if monotonic_penalty > 0:
+            #monotonic_penalty = np.abs(1/np.log(monotonic_penalty))
 
         ref_penalty = 0
         if refs is not None:
@@ -871,22 +1117,23 @@ class BRBPref(BRB):
                         ref_diff
                 )
             )
-        # ref_penalty /= len(refs)
+            ref_penalty /= refs.shape[1]
+            #if ref_penalty > 0:
+                #ref_penalty = np.abs(1/np.log(ref_penalty))
 
         ideal_penalty = (1 - self._predict_train(ideal))**2
         nadir_penalty = (self._predict_train(nadir))**2
-        monotonic_penalty /= n_test**3
 
-        print(f"ref_penalty: {ref_penalty} \n"
-              f"ideal_penalty: {ideal_penalty} \n"
-              f"nadir_penalty: {nadir_penalty} \n"
-              f"monotonic_penalty: {monotonic_penalty} \n"
-              f"dm_penalty: {dm_penalty}"
-        )
+        if print_res:
+            print(f"ref_penalty: {ref_penalty} \n"
+                f"ideal_penalty: {ideal_penalty} \n"
+                f"nadir_penalty: {nadir_penalty} \n"
+                f"monotonic_penalty: {monotonic_penalty} \n"
+                f"dm_penalty: {dm_penalty}"
+            )
         
-        minime = ref_penalty + ideal_penalty + nadir_penalty + monotonic_penalty + dm_penalty
-        print(f"f(x)={minime[0]}")
-
+        minime = (ref_penalty + ideal_penalty + nadir_penalty + monotonic_penalty + dm_penalty) / 5
+        # minime = np.max([ref_penalty, monotonic_penalty, dm_penalty]) + ideal_penalty + nadir_penalty
         return minime
 
 # Testing
@@ -961,7 +1208,8 @@ def article1():
     up = 3
 
     # create training data
-    n_train = 100
+    np.random.seed(1)
+    n_train = 1000
     xs_train = np.sort(np.random.uniform(low, up, (n_train, 1)))
     ys_train = f(xs_train)
 
@@ -985,7 +1233,7 @@ def article1():
     )
 
     # train the model
-    brb.train(xs_train, ys_train, brb._flatten_parameters())
+    brb.train(xs_train, ys_train, brb._flatten_parameters(), use_de=True)
 
     print("After training")
     print(brb)
