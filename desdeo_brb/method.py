@@ -21,7 +21,7 @@ from utility import (load_and_scale_data,
 const_font = "Arial Bold"
 const_font_size = 12
 const_fontsetting = (const_font, const_font_size)
-variant = 1
+variant = 2
 
 objective_names = ["Income", "Stored CO2", "CHSI"]
 
@@ -62,7 +62,7 @@ def method(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = o
         for i, _ in enumerate(row_names):
             for j, _ in enumerate(col_names):
                 print(f"{(i, j)}")
-                entry = tk.Label(tframe, text=f"{np.format_float_scientific(data[i, j], precision=5)}",
+                entry = tk.Label(tframe, text=f"{np.format_float_scientific(data[i, j], precision=2)}",
                                  font=const_fontsetting, relief="ridge")
                 entry.grid(row=i+1, column=j+1, sticky="we", padx=5, pady=2.5)
             pass
@@ -165,7 +165,7 @@ def method(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = o
         print(f"ref point is {reference_point}")
 
     # show the paretofront
-    fig_pf = plt.figure(figsize=(8, 6), dpi=160)
+    fig_pf = plt.figure(figsize=(8, 6), dpi=120)
     fig_pf.suptitle("Paretofront in original scale")
 
     canvas_pf = tkagg.FigureCanvasTkAgg(fig_pf, master=window)
@@ -372,7 +372,7 @@ def method(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = o
         [child.destroy() for child in window.winfo_children()]
 
         # check fitness again
-        dm_choices = ask_preference(window, brb, paretofront, scaler, nadir=nadir, deal=ideal)
+        dm_choices = ask_preference(window, brb, paretofront, scaler, nadir=nadir, ideal=ideal)
         fitness, brb_choices = calculate_fitness(window, brb, dm_choices)
 
         if fitness >= 80:
@@ -381,6 +381,9 @@ def method(data_dir: str, fname_po: str, fname_pf: str, objective_names: str = o
             pf_scores = brb_score(brb, paretofront)
             best_5 = np.argsort(pf_scores)[::-1][:5]
             print(f"{paretofront_orig[best_5]}\n with scores {pf_scores[best_5]}")
+            draw_parallel(paretofront[best_5])
+            window.mainloop()
+            print(brb)
             break
 
         tk.messagebox.showinfo("Training...", "The BRB model will be trained now, this might take a while.")
@@ -463,7 +466,7 @@ def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", 
         for j in range(len(target_candidates_fst[0])):
             # each column
             lbl = tk.Label(frame_comp,
-                           text=f"{np.format_float_scientific(target_candidates_fst[i, j], precision=5)}",
+                           text=f"{np.format_float_scientific(target_candidates_fst[i, j], precision=2)}",
                            font=const_fontsetting, relief="ridge")
             lbl.grid(row=2+i, column=j+1, sticky="we", padx=5, pady=2.5)
 
@@ -477,7 +480,7 @@ def ask_preference(window, brb, paretofront, scaler, objective_names=["Income", 
         for j in range(len(target_candidates_snd[0])):
             # each column
             lbl = tk.Label(frame_comp,
-                           text=f"{np.format_float_scientific(target_candidates_snd[i, j], precision=5)}",
+                           text=f"{np.format_float_scientific(target_candidates_snd[i, j], precision=2)}",
                            font=const_fontsetting, relief="ridge")
             lbl.grid(row=2+i, column=j+2+len(target_candidates_snd[0]), sticky="we", padx=5, pady=2.5)
 
@@ -561,7 +564,7 @@ def calculate_fitness(window, brb, dm_choices, delta=0.05):
 
     
 def draw_ranking(window, brb, paretofront):
-    fig_3d = plt.figure(figsize=(8, 6), dpi=160)
+    fig_3d = plt.figure(figsize=(8, 6), dpi=120)
     canvas_res = tkagg.FigureCanvasTkAgg(fig_3d, master=window)
     plot_3d_ranks_colored(brb, paretofront, fig=fig_3d)
 
@@ -579,7 +582,7 @@ def draw_ranking(window, brb, paretofront):
 
 
 def draw_utility(window, brb):
-    fig_util = plt.figure(figsize=(9, 6), dpi=160)
+    fig_util = plt.figure(figsize=(9, 6), dpi=120)
     canvas_res = tkagg.FigureCanvasTkAgg(fig_util, master=window)
     plot_utility_monotonicity(brb, [[0,1], [0,1], [0,1]], fig=fig_util)
 
@@ -600,7 +603,7 @@ def draw_radial(candidates, name=None, nadir=None, ideal=None):
     window = tk.Tk()
     window.title(f"Candidate comparison")
 
-    fig_radial = plt.figure(figsize=(5, 4), dpi=160)
+    fig_radial = plt.figure(figsize=(5, 4), dpi=120)
     canvas_res = tkagg.FigureCanvasTkAgg(fig_radial, master=window)
 
     if name is not None:
@@ -649,10 +652,11 @@ def draw_radial(candidates, name=None, nadir=None, ideal=None):
 
 
 def draw_parallel(candidates, obj_names=["INCOME", "CO2", "CHSI"]):
+    print(candidates)
     window = tk.Tk()
     window.title(f"Candidate comparison")
 
-    fig_par = plt.figure(figsize=(7, 4), dpi=160)
+    fig_par = plt.figure(figsize=(7, 4), dpi=120)
     canvas_res = tkagg.FigureCanvasTkAgg(fig_par, master=window)
     
     fig_par.suptitle("Candidate comparison")

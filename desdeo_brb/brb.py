@@ -597,6 +597,7 @@ class BRB:
         precedents_end = trainables.flat_trainables.shape[0]
         cons_precedents = []
 
+        precedent_diff = 0.1
         for j in range(
             precedents_start, precedents_end, trainables.n_precedents
         ):
@@ -604,7 +605,7 @@ class BRB:
                 con = dict(
                     type="ineq",
                     fun=lambda x, i, v: x[i + 1] - x[i] - v,
-                    args=[i, 1e-6],
+                    args=[i, precedent_diff],
                 )
 
                 cons_precedents.append(con)
@@ -711,12 +712,11 @@ class BRB:
                 bounds=all_bounds,
                 constraints=all_cons,
                 options={
-                    "ftol": 1e-5,
+                    "ftol": 1e-7,
                     "disp": True,
                     "maxiter": 100000,
-                    "eps": 1e-5,
                 },
-                # callback=lambda _: print("."),
+                callback=lambda x, obj_args=obj_args: print(f"f(x)={self._objective(x, *obj_args)}"),
             )
 
         else:
@@ -800,7 +800,7 @@ class BRB:
             #)
 
             def callback(x, convergence=None):
-                res = self._objective(x, *obj_args, print_res=True)
+                res = self._objective(x, *obj_args)
                 print(f"f(x)={res}")
 
             def grad(x, *args):
