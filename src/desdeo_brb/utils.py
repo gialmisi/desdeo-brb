@@ -24,9 +24,7 @@ def cartesian_product(list_of_arrays: list[np.ndarray]) -> np.ndarray:
     return np.column_stack([g.ravel() for g in grids])
 
 
-def generate_uniform_referential_values(
-    low: float, high: float, n: int
-) -> np.ndarray:
+def generate_uniform_referential_values(low: float, high: float, n: int) -> np.ndarray:
     """Generate *n* uniformly spaced referential values between *low* and *high*.
 
     Args:
@@ -38,6 +36,46 @@ def generate_uniform_referential_values(
         1-D array of *n* evenly spaced values from *low* to *high*.
     """
     return np.linspace(low, high, n)
+
+
+def pad_referential_values(
+    ref_values: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pad varying-length referential value arrays into a single 2D array.
+
+    Required for JAX JIT compilation, which needs static array shapes.
+    Unused entries are padded with ``np.inf``.
+
+    Args:
+        ref_values: List of 1D arrays, one per attribute.
+
+    Returns:
+        Tuple of ``(padded, lengths)`` where *padded* has shape
+        ``(n_attributes, max_len)`` and *lengths* is an integer array
+        of shape ``(n_attributes,)`` with the original lengths.
+    """
+    lengths = np.array([len(rv) for rv in ref_values], dtype=int)
+    max_len = int(lengths.max())
+    n_attributes = len(ref_values)
+    padded = np.full((n_attributes, max_len), np.inf)
+    for i, rv in enumerate(ref_values):
+        padded[i, : len(rv)] = rv
+    return padded, lengths
+
+
+def unpad_referential_values(
+    padded: np.ndarray, lengths: np.ndarray
+) -> list[np.ndarray]:
+    """Inverse of :func:`pad_referential_values`.
+
+    Args:
+        padded: 2D array of shape ``(n_attributes, max_len)``.
+        lengths: Integer array of original lengths per attribute.
+
+    Returns:
+        List of 1D arrays, one per attribute, with padding removed.
+    """
+    return [padded[i, : int(lengths[i])].copy() for i in range(len(lengths))]
 
 
 def build_rule_antecedent_indices(
@@ -53,7 +91,7 @@ def build_rule_antecedent_indices(
         referential_values: List of 1-D arrays, one per attribute.
 
     Returns:
-        2-D integer array of shape ``(n_rules, n_attributes)`` containing
+        2D integer array of shape ``(n_rules, n_attributes)`` containing
         all index combinations.
     """
     index_arrays = [np.arange(len(rv)) for rv in referential_values]

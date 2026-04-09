@@ -4,6 +4,7 @@ Provides the ``BRBModel`` class which supports fitting, predicting, and
 inspecting a Belief Rule-Based inference system.
 """
 
+import warnings
 from typing import Any, Callable
 
 import numpy as np
@@ -16,7 +17,7 @@ from desdeo_brb.inference import (
     input_transform,
 )
 from desdeo_brb.models import InferenceResult, RuleBase
-from desdeo_brb.utils import build_rule_antecedent_indices
+from desdeo_brb.utils import build_rule_antecedent_indices, pad_referential_values
 
 
 class BRBModel:
@@ -45,7 +46,17 @@ class BRBModel:
         rule_base: RuleBase | None = None,
         utility_fn: Callable[[np.ndarray], np.ndarray] | None = None,
         initial_rule_fn: Callable[[np.ndarray], float] | None = None,
+        backend: str = "numpy",
     ) -> None:
+        if backend not in ("numpy", "jax"):
+            raise ValueError(f"backend must be 'numpy' or 'jax', got {backend!r}")
+        if backend == "jax":
+            from desdeo_brb.jax_backend import JAX_AVAILABLE
+
+            if not JAX_AVAILABLE:
+                raise ImportError("Install JAX: pip install desdeo-brb[jax]")
+        self._backend = backend
+
         self._precedent_referential_values = [
             np.asarray(rv, dtype=float) for rv in precedent_referential_values
         ]
@@ -134,6 +145,12 @@ class BRBModel:
         Returns:
             An :class:`InferenceResult` with all intermediate and final values.
         """
+        if self._backend == "jax":
+            return self._predict_jax(X)
+        return self._predict_numpy(X)
+
+    def _predict_numpy(self, X: np.ndarray) -> InferenceResult:
+        """NumPy inference path."""
         rb = self.rule_base
 
         alphas = input_transform(X, rb.precedent_referential_values)
@@ -151,6 +168,52 @@ class BRBModel:
             combined_belief_degrees=combined,
             consequent_values=rb.consequent_referential_values,
             output=output,
+        )
+
+    def _predict_jax(self, X: np.ndarray) -> InferenceResult:
+        """JAX inference path. Converts results back to NumPy for the public API."""
+        from desdeo_brb.jax_backend import (
+            compute_activation_weights_jax,
+            compute_combined_belief_degrees_jax,
+            compute_output_jax,
+            input_transform_jax,
+        )
+
+        import jax.numpy as jnp
+
+        rb = self.rule_base
+        padded_rv, rv_lengths = pad_referential_values(rb.precedent_referential_values)
+        rv_lengths_tuple = tuple(int(x) for x in rv_lengths)
+
+        X_jax = jnp.asarray(X)
+        padded_rv_jax = jnp.asarray(padded_rv)
+
+        alphas_3d = input_transform_jax(X_jax, padded_rv_jax, rv_lengths_tuple)
+        weights = compute_activation_weights_jax(
+            alphas_3d,
+            jnp.asarray(rb.rule_antecedent_indices),
+            jnp.asarray(rb.rule_weights),
+            jnp.asarray(rb.attribute_weights),
+        )
+        combined = compute_combined_belief_degrees_jax(
+            jnp.asarray(rb.belief_degrees), weights
+        )
+        output = compute_output_jax(
+            combined, jnp.asarray(rb.consequent_referential_values)
+        )
+
+        # Convert back to numpy; split padded alphas into list
+        alphas_list = [
+            np.asarray(alphas_3d[:, i, : int(rv_lengths[i])])
+            for i in range(len(rv_lengths))
+        ]
+
+        return InferenceResult(
+            input_belief_distributions=alphas_list,
+            activation_weights=np.asarray(weights),
+            combined_belief_degrees=np.asarray(combined),
+            consequent_values=rb.consequent_referential_values,
+            output=np.asarray(output),
         )
 
     def predict_values(self, X: np.ndarray) -> np.ndarray:
@@ -172,7 +235,10 @@ class BRBModel:
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
-        """Train the model by minimizing MSE via SLSQP.
+        """Train the model by minimizing MSE.
+
+        Uses SLSQP with finite differences for the NumPy backend, or
+        L-BFGS-B with exact ``jax.grad`` gradients for the JAX backend.
 
         Args:
             X: Training inputs, shape ``(n_samples, n_attributes)``.
@@ -186,6 +252,19 @@ class BRBModel:
         Returns:
             self
         """
+        if self._backend == "jax":
+            return self._fit_jax(X, y, fix_endpoints, verbose, **minimize_kwargs)
+        return self._fit_numpy(X, y, fix_endpoints, verbose, **minimize_kwargs)
+
+    def _fit_numpy(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fix_endpoints: bool = True,
+        verbose: bool = False,
+        **minimize_kwargs: Any,
+    ) -> "BRBModel":
+        """NumPy training path using SLSQP."""
         x0 = self._flatten_params()
         bounds = self._build_bounds(fix_endpoints)
         constraints = self._build_constraints()
@@ -207,9 +286,118 @@ class BRBModel:
             **minimize_kwargs,
         )
 
-        # Rebuild validated RuleBase from the optimized parameters
         self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
         return self
+
+    def _fit_jax(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fix_endpoints: bool = True,
+        verbose: bool = False,
+        **minimize_kwargs: Any,
+    ) -> "BRBModel":
+        """JAX training path using L-BFGS-B with exact gradients."""
+        import jax
+        import jax.numpy as jnp
+
+        from desdeo_brb.jax_backend import full_inference_jax_unconstrained
+
+        rb = self.rule_base
+        X_jax = jnp.asarray(X)
+        y_jax = jnp.asarray(y)
+        crv_jax = jnp.asarray(rb.consequent_referential_values)
+        rai_jax = jnp.asarray(rb.rule_antecedent_indices)
+        rv_lengths_tuple = tuple(self._ref_value_lengths)
+
+        n_rules = rb.n_rules
+        n_consequents = rb.n_consequents
+        n_attributes = rb.n_attributes
+
+        @jax.jit
+        def mse_loss(flat_params):
+            y_pred = full_inference_jax_unconstrained(
+                flat_params,
+                X_jax,
+                crv_jax,
+                rai_jax,
+                n_rules,
+                n_consequents,
+                n_attributes,
+                rv_lengths_tuple,
+            )
+            return jnp.mean((y_jax - y_pred) ** 2)
+
+        grad_fn = jax.jit(jax.grad(mse_loss))
+
+        def objective_and_grad(flat: np.ndarray) -> tuple[float, np.ndarray]:
+            flat_jax = jnp.asarray(flat)
+            loss = float(mse_loss(flat_jax))
+            grad = np.asarray(grad_fn(flat_jax))
+            return loss, grad
+
+        # Transform initial params to unconstrained space matching the
+        # softmax/softplus reparameterization in full_inference_jax.
+        x0 = self._flatten_params_unconstrained()
+        bounds = self._build_bounds_jax(fix_endpoints)
+
+        options = minimize_kwargs.pop("options", {})
+
+        result = minimize(
+            objective_and_grad,
+            x0,
+            method="L-BFGS-B",
+            jac=True,
+            bounds=bounds,
+            options=options,
+            **minimize_kwargs,
+        )
+
+        self.rule_base = self._unflatten_from_unconstrained(result.x)
+        return self
+
+    def _unflatten_from_unconstrained(self, flat: np.ndarray) -> RuleBase:
+        """Convert unconstrained JAX optimizer output to a validated RuleBase.
+
+        Applies softmax to belief degree rows and rule weights, softplus to
+        attribute weights, and sorts referential values.
+        """
+        from scipy.special import softmax as sp_softmax
+
+        rb = self.rule_base
+        n_rules = rb.n_rules
+        n_consequents = rb.n_consequents
+        n_attributes = rb.n_attributes
+        idx = 0
+
+        bd_size = n_rules * n_consequents
+        bd_raw = flat[idx : idx + bd_size].reshape(n_rules, n_consequents)
+        belief_degrees = sp_softmax(bd_raw, axis=1)
+        idx += bd_size
+
+        rw_raw = flat[idx : idx + n_rules]
+        rule_weights = sp_softmax(rw_raw)
+        idx += n_rules
+
+        aw_size = n_rules * n_attributes
+        aw_raw = flat[idx : idx + aw_size].reshape(n_rules, n_attributes)
+        attribute_weights = np.log1p(np.exp(aw_raw))  # softplus
+        idx += aw_size
+
+        precedent_referential_values = []
+        for length in self._ref_value_lengths:
+            rv = np.sort(flat[idx : idx + length].copy())
+            precedent_referential_values.append(rv)
+            idx += length
+
+        return RuleBase(
+            precedent_referential_values=precedent_referential_values,
+            consequent_referential_values=rb.consequent_referential_values,
+            belief_degrees=belief_degrees,
+            rule_weights=rule_weights,
+            attribute_weights=attribute_weights,
+            rule_antecedent_indices=rb.rule_antecedent_indices,
+        )
 
     def fit_custom(
         self,
@@ -223,10 +411,15 @@ class BRBModel:
         The loss function receives the model instance (with updated parameters)
         and should return a scalar loss value.
 
+        For the JAX backend, ``jax.grad`` is attempted on the loss function.
+        If the loss function is not JAX-compatible, falls back to SLSQP
+        with finite differences and emits a warning.
+
         Args:
             loss_fn: Callable with signature ``loss_fn(model) -> float``.
             constraints: Additional SLSQP constraints (dicts with ``type``,
                 ``fun`` keys). BRB-specific constraints are always included.
+                Ignored when using the JAX/L-BFGS-B path.
             verbose: If ``True``, print optimizer progress.
             **minimize_kwargs: Extra keyword arguments forwarded to
                 ``scipy.optimize.minimize``.
@@ -234,6 +427,20 @@ class BRBModel:
         Returns:
             self
         """
+        if self._backend == "jax":
+            return self._fit_custom_jax(
+                loss_fn, constraints, verbose, **minimize_kwargs
+            )
+        return self._fit_custom_numpy(loss_fn, constraints, verbose, **minimize_kwargs)
+
+    def _fit_custom_numpy(
+        self,
+        loss_fn: Callable[["BRBModel"], float],
+        constraints: list[dict] | None = None,
+        verbose: bool = False,
+        **minimize_kwargs: Any,
+    ) -> "BRBModel":
+        """NumPy custom training via SLSQP."""
         x0 = self._flatten_params()
         bounds = self._build_bounds(fix_endpoints=False)
         all_constraints = self._build_constraints()
@@ -258,9 +465,68 @@ class BRBModel:
             **minimize_kwargs,
         )
 
-        # Validate final parameters
         self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
         return self
+
+    def _fit_custom_jax(
+        self,
+        loss_fn: Callable[["BRBModel"], float],
+        constraints: list[dict] | None = None,
+        verbose: bool = False,
+        **minimize_kwargs: Any,
+    ) -> "BRBModel":
+        """JAX custom training: try jax.grad, fall back to SLSQP."""
+        import jax
+        import jax.numpy as jnp
+
+        x0 = self._flatten_params()
+
+        # Try to build a JAX-differentiable objective
+        def jax_objective(flat_jax):
+            self.rule_base = self._unflatten_params(
+                np.asarray(flat_jax), validate=False
+            )
+            return loss_fn(self)
+
+        try:
+            # Test if jax.grad works on the loss function
+            test_grad = jax.grad(jax_objective)(jnp.asarray(x0))
+            if not jnp.all(jnp.isfinite(test_grad)):
+                raise ValueError("Non-finite gradients")
+
+            grad_fn = jax.grad(jax_objective)
+
+            def objective_and_grad(flat: np.ndarray) -> tuple[float, np.ndarray]:
+                flat_jax = jnp.asarray(flat)
+                loss = float(jax_objective(flat_jax))
+                grad = np.asarray(grad_fn(flat_jax))
+                return loss, grad
+
+            bounds = self._build_bounds(fix_endpoints=False)
+            options = minimize_kwargs.pop("options", {})
+
+            result = minimize(
+                objective_and_grad,
+                x0,
+                method="L-BFGS-B",
+                jac=True,
+                bounds=bounds,
+                options=options,
+                **minimize_kwargs,
+            )
+
+            self.rule_base = self._unflatten_from_unconstrained(result.x)
+            return self
+
+        except Exception:
+            warnings.warn(
+                "Custom loss function is not JAX-differentiable. "
+                "Falling back to SLSQP with finite differences.",
+                stacklevel=2,
+            )
+            return self._fit_custom_numpy(
+                loss_fn, constraints, verbose, **minimize_kwargs
+            )
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
         """Get model parameters (sklearn-compatible).
@@ -275,6 +541,7 @@ class BRBModel:
             "precedent_referential_values": self._precedent_referential_values,
             "consequent_referential_values": self._consequent_referential_values,
             "utility_fn": self._utility_fn,
+            "backend": self._backend,
         }
         if deep:
             params["rule_base"] = self.rule_base
@@ -305,6 +572,11 @@ class BRBModel:
             self._utility_fn = params["utility_fn"]
         if "rule_base" in params:
             self.rule_base = params["rule_base"]
+        if "backend" in params:
+            backend = params["backend"]
+            if backend not in ("numpy", "jax"):
+                raise ValueError(f"backend must be 'numpy' or 'jax', got {backend!r}")
+            self._backend = backend
         return self
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
@@ -355,6 +627,63 @@ class BRBModel:
         for rv in rb.precedent_referential_values:
             parts.append(rv)
         return np.concatenate(parts)
+
+    def _flatten_params_unconstrained(self) -> np.ndarray:
+        """Flatten parameters into unconstrained space for JAX optimization.
+
+        Applies inverse softmax (log) to belief degrees and rule weights,
+        and inverse softplus to attribute weights. Referential values are
+        left as-is (ordering is enforced by jnp.sort in the JAX path).
+        """
+        rb = self.rule_base
+        eps = 1e-12
+
+        # Inverse softmax: log(x) (softmax is shift-invariant, so log works)
+        bd_log = np.log(np.clip(rb.belief_degrees, eps, None))
+        rw_log = np.log(np.clip(rb.rule_weights, eps, None))
+
+        # Inverse softplus: log(exp(x) - 1); for x > ~20 this is just x
+        aw = rb.attribute_weights
+        aw_inv = np.where(aw > 20, aw, np.log(np.expm1(np.clip(aw, eps, None))))
+
+        parts = [bd_log.ravel(), rw_log, aw_inv.ravel()]
+        for rv in rb.precedent_referential_values:
+            parts.append(rv)
+        return np.concatenate(parts)
+
+    def _build_bounds_jax(
+        self, fix_endpoints: bool
+    ) -> list[tuple[float | None, float | None]]:
+        """Construct bounds for the JAX/L-BFGS-B optimizer.
+
+        Since belief degrees and rule weights use softmax reparameterization
+        and attribute weights use softplus, those parameters are unconstrained.
+        Only referential values have meaningful bounds.
+        """
+        rb = self.rule_base
+        n_rules = rb.n_rules
+        n_consequents = rb.n_consequents
+        n_attributes = rb.n_attributes
+        bounds: list[tuple[float | None, float | None]] = []
+
+        # Belief degrees (unconstrained logits): no bounds
+        bounds.extend([(None, None)] * (n_rules * n_consequents))
+
+        # Rule weights (unconstrained logits): no bounds
+        bounds.extend([(None, None)] * n_rules)
+
+        # Attribute weights (unconstrained softplus input): no bounds
+        bounds.extend([(None, None)] * (n_rules * n_attributes))
+
+        # Precedent referential values: same logic as NumPy path
+        for rv in rb.precedent_referential_values:
+            for j in range(len(rv)):
+                if fix_endpoints and (j == 0 or j == len(rv) - 1):
+                    bounds.append((float(rv[j]), float(rv[j])))
+                else:
+                    bounds.append((float(rv[0]), float(rv[-1])))
+
+        return bounds
 
     def _unflatten_params(self, flat: np.ndarray, validate: bool = True) -> RuleBase:
         """Reconstruct a RuleBase from a flat parameter vector.
