@@ -1,8 +1,19 @@
-# DESDEO-BRBs
-This module implements the necessary tools to implement and work with belief
-rule based systems, or BRBs for short.
+# desdeo-brb
 
-## Currently implemented
-* Basic BRBs with multi-dimensional inputs.
-* Training of BRBs using data.
-* Simple example on the usage of BRB models.
+A trainable Belief Rule-Based (BRB) inference system with an sklearn-compatible API.
+
+> **Note:** `desdeo` is part of the package name for historical reasons. This library is standalone and has no dependency on the DESDEO framework.
+
+## Installation
+
+```bash
+pip install desdeo-brb
+```
+
+## Status
+
+Under development. Version 1.0.
+
+## License
+
+MIT
