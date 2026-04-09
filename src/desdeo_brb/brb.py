@@ -208,7 +208,7 @@ class BRBModel:
         )
 
         # Rebuild validated RuleBase from the optimized parameters
-        self.rule_base = self._unflatten_params(result.x)
+        self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
         return self
 
     def fit_custom(
@@ -241,7 +241,7 @@ class BRBModel:
             all_constraints.extend(constraints)
 
         def objective(flat: np.ndarray) -> float:
-            self.rule_base = self._unflatten_params(flat)
+            self.rule_base = self._unflatten_params(flat, validate=False)
             return loss_fn(self)
 
         options = minimize_kwargs.pop("options", {})
@@ -258,7 +258,8 @@ class BRBModel:
             **minimize_kwargs,
         )
 
-        self.rule_base = self._unflatten_params(result.x)
+        # Validate final parameters
+        self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
         return self
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
@@ -355,8 +356,14 @@ class BRBModel:
             parts.append(rv)
         return np.concatenate(parts)
 
-    def _unflatten_params(self, flat: np.ndarray) -> RuleBase:
-        """Reconstruct a RuleBase from a flat parameter vector."""
+    def _unflatten_params(self, flat: np.ndarray, validate: bool = True) -> RuleBase:
+        """Reconstruct a RuleBase from a flat parameter vector.
+
+        Args:
+            flat: The flat parameter vector.
+            validate: If ``False``, skip Pydantic validation (used during
+                optimization to avoid overhead on every iteration).
+        """
         rb = self.rule_base
         n_rules = rb.n_rules
         n_consequents = rb.n_consequents
@@ -384,14 +391,63 @@ class BRBModel:
             precedent_referential_values.append(flat[idx : idx + length].copy())
             idx += length
 
-        return RuleBase(
-            precedent_referential_values=precedent_referential_values,
-            consequent_referential_values=rb.consequent_referential_values,
-            belief_degrees=belief_degrees,
-            rule_weights=rule_weights,
-            attribute_weights=attribute_weights,
-            rule_antecedent_indices=rb.rule_antecedent_indices,
-        )
+        fields = {
+            "precedent_referential_values": precedent_referential_values,
+            "consequent_referential_values": rb.consequent_referential_values,
+            "belief_degrees": belief_degrees,
+            "rule_weights": rule_weights,
+            "attribute_weights": attribute_weights,
+            "rule_antecedent_indices": rb.rule_antecedent_indices,
+        }
+
+        if validate:
+            return RuleBase(**fields)
+        return RuleBase.model_construct(**fields)
+
+    def _normalize_flat(self, flat: np.ndarray) -> np.ndarray:
+        """Project a flat parameter vector onto the constraint surface.
+
+        Re-normalizes belief degree rows and rule weights to sum to exactly 1,
+        clips attribute weights to >= 0, and sorts referential values. This
+        corrects for small constraint violations from the optimizer.
+        """
+        flat = flat.copy()
+        rb = self.rule_base
+        n_rules = rb.n_rules
+        n_consequents = rb.n_consequents
+        n_attributes = rb.n_attributes
+
+        # Belief degrees: clip to [0,1] and renormalize rows
+        bd_size = n_rules * n_consequents
+        bd = flat[:bd_size].reshape(n_rules, n_consequents)
+        bd = np.clip(bd, 0.0, 1.0)
+        row_sums = bd.sum(axis=1, keepdims=True)
+        row_sums = np.where(row_sums > 0, row_sums, 1.0)
+        bd /= row_sums
+        flat[:bd_size] = bd.ravel()
+
+        # Rule weights: clip and renormalize
+        rw_start = bd_size
+        rw_end = rw_start + n_rules
+        rw = flat[rw_start:rw_end]
+        rw = np.clip(rw, 0.0, 1.0)
+        rw_sum = rw.sum()
+        if rw_sum > 0:
+            rw /= rw_sum
+        flat[rw_start:rw_end] = rw
+
+        # Attribute weights: clip to >= 0
+        aw_start = rw_end
+        aw_end = aw_start + n_rules * n_attributes
+        flat[aw_start:aw_end] = np.clip(flat[aw_start:aw_end], 0.0, None)
+
+        # Referential values: sort each attribute's values
+        pos = aw_end
+        for length in self._ref_value_lengths:
+            flat[pos : pos + length] = np.sort(flat[pos : pos + length])
+            pos += length
+
+        return flat
 
     def _build_bounds(self, fix_endpoints: bool) -> list[tuple[float, float]]:
         """Construct per-element bounds for the optimizer."""
@@ -407,8 +463,9 @@ class BRBModel:
         # rule_weights: each element in [0, 1]
         bounds.extend([(0.0, 1.0)] * n_rules)
 
-        # attribute_weights: >= 0, no hard upper bound but cap at a reasonable value
-        bounds.extend([(0.0, None)] * (n_rules * n_attributes))  # type: ignore[arg-type]
+        # attribute_weights: [0, 10], capped to prevent numerical instability
+        # in the exponentiation alpha^delta_bar during activation weight computation
+        bounds.extend([(0.0, 10.0)] * (n_rules * n_attributes))
 
         # precedent referential values
         for i, rv in enumerate(rb.precedent_referential_values):
@@ -473,9 +530,9 @@ class BRBModel:
     ) -> float:
         """Compute MSE for a given flat parameter vector.
 
-        Temporarily updates the rule base without full validation for speed,
-        then restores it.
+        Skips validation during optimization for speed; the final result
+        is validated in ``fit()``.
         """
-        self.rule_base = self._unflatten_params(flat_params)
+        self.rule_base = self._unflatten_params(flat_params, validate=False)
         y_pred = self.predict_values(X)
         return float(np.mean((y - y_pred) ** 2))

@@ -59,7 +59,10 @@ def input_transform(
 
             # Belief for the upper adjacent value
             denom = rv[j + 1] - rv[j]
-            alpha_upper = (h - rv[j]) / denom
+            # When two adjacent referential values coincide (degenerate
+            # interval during optimization), assign full belief to the lower.
+            safe_denom = np.where(denom > 0, denom, 1.0)
+            alpha_upper = np.where(denom > 0, (h - rv[j]) / safe_denom, 0.0)
             alpha_lower = 1.0 - alpha_upper
 
             # Place beliefs at the two adjacent positions
@@ -108,8 +111,9 @@ def compute_activation_weights(
     # Normalize attribute weights per rule: delta_bar_{i,k} = delta_{i,k} / max_i(delta_{i,k})
     delta_max = deltas.max(axis=1, keepdims=True)  # (n_rules, 1)
     # Avoid division by zero for rules with all-zero weights
+    safe_delta_max = np.where(delta_max > 0, delta_max, 1.0)
     delta_bar = np.where(
-        delta_max > 0, deltas / delta_max, 0.0
+        delta_max > 0, deltas / safe_delta_max, 0.0
     )  # (n_rules, n_attributes)
 
     # Gather the matching degree for each rule's antecedent per attribute
