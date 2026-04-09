@@ -24,6 +24,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "pipeline: pipeline leak detection example tests",
 ]
 
 [tool.hatch.build.targets.wheel]
