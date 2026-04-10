@@ -296,18 +296,23 @@ def full_inference_jax_unconstrained(
     n_consequents: int,
     n_attributes: int,
     rv_lengths: tuple[int, ...],
+    normalize_rule_weights: bool = True,
 ) -> "jnp.ndarray":
     """End-to-end inference from unconstrained parameters.
 
     Wraps :func:`full_inference_jax` with differentiable reparameterization:
-    softmax for belief degree rows and rule weights, softplus for attribute
-    weights, and sort for referential values. This allows L-BFGS-B (box
-    bounds only) to optimize without explicit equality constraints.
+    softmax for belief degree rows, softmax or sigmoid for rule weights,
+    softplus for attribute weights, and sort for referential values. This
+    allows L-BFGS-B (box bounds only) to optimize without explicit equality
+    constraints.
 
     Args:
         Same as :func:`full_inference_jax`, except ``flat_params`` is in
         unconstrained space (logits for belief degrees/rule weights,
         unconstrained reals for attribute weights).
+        normalize_rule_weights: If True, apply softmax to rule weights
+            (constraining them to the simplex). If False, apply sigmoid
+            (each weight independently in [0, 1]).
     """
     _check_jax()
     idx = 0
@@ -318,9 +323,12 @@ def full_inference_jax_unconstrained(
     bd = jax.nn.softmax(bd_raw, axis=1)
     idx += bd_size
 
-    # Apply softmax to rule weights
+    # Rule weights: softmax if normalized, sigmoid otherwise
     rw_raw = flat_params[idx : idx + n_rules]
-    rw = jax.nn.softmax(rw_raw)
+    if normalize_rule_weights:
+        rw = jax.nn.softmax(rw_raw)
+    else:
+        rw = jax.nn.sigmoid(rw_raw)
     idx += n_rules
 
     # Apply softplus to attribute weights
@@ -356,4 +364,14 @@ if JAX_AVAILABLE:
     full_inference_jax_jit = jax.jit(
         full_inference_jax,
         static_argnames=("n_rules", "n_consequents", "n_attributes", "rv_lengths"),
+    )
+    full_inference_jax_unconstrained_jit = jax.jit(
+        full_inference_jax_unconstrained,
+        static_argnames=(
+            "n_rules",
+            "n_consequents",
+            "n_attributes",
+            "rv_lengths",
+            "normalize_rule_weights",
+        ),
     )

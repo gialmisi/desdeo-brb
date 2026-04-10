@@ -233,6 +233,7 @@ class BRBModel:
         y: np.ndarray,
         fix_endpoints: bool = True,
         fix_endpoint_beliefs: bool = False,
+        normalize_rule_weights: bool = True,
         method: str | None = None,
         optimizer_options: dict | None = None,
         verbose: bool = False,
@@ -256,6 +257,12 @@ class BRBModel:
                 are known to be correct (e.g., from ``initial_rule_fn`` or
                 verified expert knowledge) to prevent the optimizer from
                 distorting endpoint predictions.
+            normalize_rule_weights: If ``True`` (default), constrain rule
+                weights to sum to 1 during optimization. If ``False``, only
+                bound each rule weight individually to [0, 1]; the optimizer
+                may pick any scaling and the final stored weights are
+                renormalized. Removing the sum constraint can give SLSQP /
+                trust-constr a less coupled search landscape.
             method: scipy.optimize.minimize method. NumPy backend supports
                 ``"SLSQP"`` and ``"trust-constr"``; JAX backend supports
                 ``"L-BFGS-B"``. If ``None``, uses the backend default.
@@ -295,6 +302,7 @@ class BRBModel:
                 method,
                 optimizer_options,
                 verbose,
+                normalize_rule_weights=normalize_rule_weights,
                 **minimize_kwargs,
             )
         return self._fit_numpy(
@@ -305,6 +313,7 @@ class BRBModel:
             method,
             optimizer_options,
             verbose,
+            normalize_rule_weights=normalize_rule_weights,
             **minimize_kwargs,
         )
 
@@ -317,6 +326,7 @@ class BRBModel:
         method: str = "SLSQP",
         optimizer_options: dict | None = None,
         verbose: bool = False,
+        normalize_rule_weights: bool = True,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
         """NumPy training path using SLSQP or trust-constr."""
@@ -324,7 +334,9 @@ class BRBModel:
         bounds = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
 
         if method == "SLSQP":
-            constraints = self._build_constraints(fix_endpoint_beliefs)
+            constraints = self._build_constraints(
+                fix_endpoint_beliefs, normalize_rule_weights
+            )
             default_options = {
                 "maxiter": 1000,
                 "ftol": 1e-9,
@@ -332,7 +344,7 @@ class BRBModel:
             }
         else:  # trust-constr
             constraints = self._build_trust_constr_constraints(
-                len(x0), fix_endpoint_beliefs
+                len(x0), fix_endpoint_beliefs, normalize_rule_weights
             )
             default_options = {
                 "maxiter": 2000,
@@ -370,6 +382,7 @@ class BRBModel:
         method: str = "L-BFGS-B",
         optimizer_options: dict | None = None,
         verbose: bool = False,
+        normalize_rule_weights: bool = True,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
         """JAX training path using L-BFGS-B with exact gradients."""
@@ -388,6 +401,7 @@ class BRBModel:
         n_rules = rb.n_rules
         n_consequents = rb.n_consequents
         n_attributes = rb.n_attributes
+        norm_rw = normalize_rule_weights  # capture as local for closure
 
         @jax.jit
         def mse_loss(flat_params):
@@ -400,6 +414,7 @@ class BRBModel:
                 n_consequents,
                 n_attributes,
                 rv_lengths_tuple,
+                normalize_rule_weights=norm_rw,
             )
             return jnp.mean((y_jax - y_pred) ** 2)
 
@@ -413,7 +428,7 @@ class BRBModel:
 
         # Transform initial params to unconstrained space matching the
         # softmax/softplus reparameterization in full_inference_jax.
-        x0 = self._flatten_params_unconstrained()
+        x0 = self._flatten_params_unconstrained(normalize_rule_weights)
         bounds = self._build_bounds_jax(fix_endpoints, fix_endpoint_beliefs)
 
         default_options: dict = {
@@ -433,15 +448,23 @@ class BRBModel:
             **minimize_kwargs,
         )
 
-        self.rule_base = self._unflatten_from_unconstrained(result.x)
+        self.rule_base = self._unflatten_from_unconstrained(
+            result.x, normalize_rule_weights=normalize_rule_weights
+        )
         return self
 
-    def _unflatten_from_unconstrained(self, flat: np.ndarray) -> RuleBase:
+    def _unflatten_from_unconstrained(
+        self, flat: np.ndarray, normalize_rule_weights: bool = True
+    ) -> RuleBase:
         """Convert unconstrained JAX optimizer output to a validated RuleBase.
 
-        Applies softmax to belief degree rows and rule weights, softplus to
-        attribute weights, and sorts referential values.
+        Applies softmax to belief degree rows, softmax or sigmoid to rule
+        weights, softplus to attribute weights, and sorts referential values.
+        Rule weights are renormalized to sum to 1 in the final stored
+        RuleBase regardless of the optimization parameterization (the
+        activation weight formula is scale-invariant in rule weights).
         """
+        from scipy.special import expit as sp_sigmoid
         from scipy.special import softmax as sp_softmax
 
         rb = self.rule_base
@@ -456,7 +479,12 @@ class BRBModel:
         idx += bd_size
 
         rw_raw = flat[idx : idx + n_rules]
-        rule_weights = sp_softmax(rw_raw)
+        if normalize_rule_weights:
+            rule_weights = sp_softmax(rw_raw)
+        else:
+            rw_sigmoid = sp_sigmoid(rw_raw)
+            rw_sum = rw_sigmoid.sum()
+            rule_weights = rw_sigmoid / rw_sum if rw_sum > 0 else np.full(n_rules, 1.0 / n_rules)
         idx += n_rules
 
         aw_size = n_rules * n_attributes
@@ -708,25 +736,34 @@ class BRBModel:
             parts.append(rv)
         return np.concatenate(parts)
 
-    def _flatten_params_unconstrained(self) -> np.ndarray:
+    def _flatten_params_unconstrained(
+        self, normalize_rule_weights: bool = True
+    ) -> np.ndarray:
         """Flatten parameters into unconstrained space for JAX optimization.
 
-        Applies inverse softmax (log) to belief degrees and rule weights,
-        and inverse softplus to attribute weights. Referential values are
-        left as-is (ordering is enforced by jnp.sort in the JAX path).
+        Applies inverse softmax (log) to belief degrees, inverse softmax or
+        inverse sigmoid (logit) to rule weights, and inverse softplus to
+        attribute weights. Referential values are left as-is (ordering is
+        enforced by jnp.sort in the JAX path).
         """
         rb = self.rule_base
         eps = 1e-12
 
         # Inverse softmax: log(x) (softmax is shift-invariant, so log works)
         bd_log = np.log(np.clip(rb.belief_degrees, eps, None))
-        rw_log = np.log(np.clip(rb.rule_weights, eps, None))
+
+        if normalize_rule_weights:
+            rw_inv = np.log(np.clip(rb.rule_weights, eps, None))
+        else:
+            # Inverse sigmoid (logit): log(p / (1 - p))
+            rw_clipped = np.clip(rb.rule_weights, eps, 1.0 - eps)
+            rw_inv = np.log(rw_clipped / (1.0 - rw_clipped))
 
         # Inverse softplus: log(exp(x) - 1); for x > ~20 this is just x
         aw = rb.attribute_weights
         aw_inv = np.where(aw > 20, aw, np.log(np.expm1(np.clip(aw, eps, None))))
 
-        parts = [bd_log.ravel(), rw_log, aw_inv.ravel()]
+        parts = [bd_log.ravel(), rw_inv, aw_inv.ravel()]
         for rv in rb.precedent_referential_values:
             parts.append(rv)
         return np.concatenate(parts)
@@ -926,7 +963,9 @@ class BRBModel:
         return bounds
 
     def _build_constraints(
-        self, fix_endpoint_beliefs: bool = False
+        self,
+        fix_endpoint_beliefs: bool = False,
+        normalize_rule_weights: bool = True,
     ) -> list[dict]:
         """Construct SLSQP equality constraints for parameter normalization."""
         rb = self.rule_base
@@ -958,14 +997,15 @@ class BRBModel:
 
             constraints.append({"type": "eq", "fun": bd_constraint})
 
-        # Rule weights sum to 1
-        rw_start = n_rules * n_consequents
-        rw_end = rw_start + n_rules
+        # Rule weights sum to 1 (only if normalization is enabled)
+        if normalize_rule_weights:
+            rw_start = n_rules * n_consequents
+            rw_end = rw_start + n_rules
 
-        def rw_constraint(flat: np.ndarray) -> float:
-            return float(flat[rw_start:rw_end].sum() - 1.0)
+            def rw_constraint(flat: np.ndarray) -> float:
+                return float(flat[rw_start:rw_end].sum() - 1.0)
 
-        constraints.append({"type": "eq", "fun": rw_constraint})
+            constraints.append({"type": "eq", "fun": rw_constraint})
 
         # Referential values ordering: rv[j] <= rv[j+1] for each attribute
         rv_offset = n_rules * n_consequents + n_rules + n_rules * n_attributes
@@ -984,7 +1024,10 @@ class BRBModel:
         return constraints
 
     def _build_trust_constr_constraints(
-        self, n_params: int, fix_endpoint_beliefs: bool = False
+        self,
+        n_params: int,
+        fix_endpoint_beliefs: bool = False,
+        normalize_rule_weights: bool = True,
     ) -> list[LinearConstraint]:
         """Build constraints in the format required by trust-constr.
 
@@ -1017,11 +1060,12 @@ class BRBModel:
                 A_bd[row_i, start : start + n_consequents] = 1.0
             constraints.append(LinearConstraint(A_bd, lb=1.0, ub=1.0))
 
-        # Rule weights sum to 1
-        A_rw = np.zeros((1, n_params))
-        rw_start = n_rules * n_consequents
-        A_rw[0, rw_start : rw_start + n_rules] = 1.0
-        constraints.append(LinearConstraint(A_rw, lb=1.0, ub=1.0))
+        # Rule weights sum to 1 (only if normalization is enabled)
+        if normalize_rule_weights:
+            A_rw = np.zeros((1, n_params))
+            rw_start = n_rules * n_consequents
+            A_rw[0, rw_start : rw_start + n_rules] = 1.0
+            constraints.append(LinearConstraint(A_rw, lb=1.0, ub=1.0))
 
         # Referential value ordering: rv[j+1] - rv[j] >= 0
         rv_offset = n_rules * n_consequents + n_rules + n_rules * n_attributes

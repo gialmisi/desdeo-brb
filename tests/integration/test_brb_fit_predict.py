@@ -224,6 +224,36 @@ def test_fit_with_custom_options():
     assert mse < 0.05, f"Custom options MSE too high: {mse}"
 
 
+def test_fit_without_rule_weight_normalization():
+    """Verify training works with unconstrained rule weights."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+    model.fit(
+        X_train, y_train, fix_endpoints=True, normalize_rule_weights=False
+    )
+
+    X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
+    y_pred = model.predict_values(X_eval)
+    y_true = f(X_eval[:, 0])
+    mse = float(np.mean((y_true - y_pred) ** 2))
+
+    assert mse < 0.05, f"MSE too high without normalization: {mse}"
+
+    # Final stored rule weights are renormalized to sum to 1 to satisfy
+    # the RuleBase validator (the activation formula is scale-invariant
+    # in rule weights, so this is mathematically equivalent).
+    rw = model.rule_base.rule_weights
+    assert np.all(rw >= 0) and np.all(rw <= 1), "Rule weights out of bounds"
+
+
 def test_fit_invalid_method():
     """Verify invalid method raises ValueError."""
     prv = [np.array([0.0, 1.0, 2.0])]
