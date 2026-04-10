@@ -120,6 +120,145 @@ def test_pyomo_solves_trivial():
     assert final_mse < 0.01, f"Final MSE too high: {final_mse}"
 
 
+def test_fit_ipopt_xsinx2():
+    """Train f(x) = x sin(x^2) with IPOPT and verify good MSE."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model.fit(X_train, y_train, fix_endpoints=True, method="ipopt")
+
+    X_eval = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_pred = model.predict_values(X_eval)
+    y_true = f(X_eval[:, 0])
+    mse = float(np.mean((y_true - y_pred) ** 2))
+
+    assert mse < 0.05, f"IPOPT MSE too high: {mse}"
+
+
+def test_fit_ipopt_endpoint_accuracy():
+    """IPOPT should achieve reasonable endpoint accuracy.
+
+    Like the scipy backends, IPOPT finds local minima where boundary
+    rule belief degrees drift, so this test uses fix_endpoint_beliefs=True
+    to preserve the initial good boundary beliefs.
+    """
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        fix_endpoint_beliefs=True,
+        method="ipopt",
+    )
+
+    y_end = model.predict_values(np.array([[3.0]]))
+    error = float(abs(y_end[0] - f(3.0)))
+    assert error < 0.2, f"IPOPT endpoint error: {error}"
+
+
+def test_fit_ipopt_with_options():
+    """Verify custom IPOPT options are accepted."""
+    prv = [np.array([0.0, 1.0, 2.0])]
+    crv = np.array([0.0, 0.5, 1.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: x[0] / 2.0)
+
+    X = np.linspace(0, 2, 20).reshape(-1, 1)
+    y = X[:, 0] / 2.0
+
+    model.fit(
+        X,
+        y,
+        method="ipopt",
+        optimizer_options={"max_iter": 100, "tol": 1e-6},
+    )
+
+
+def test_fit_ipopt_multistart():
+    """Verify n_restarts works with IPOPT."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 1.0, 2.0, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 100).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model.fit(
+        X_train, y_train, fix_endpoints=True, method="ipopt", n_restarts=3
+    )
+
+    y_pred = model.predict_values(X_train)
+    mse = float(np.mean((y_train - y_pred) ** 2))
+    assert mse < 0.5, f"IPOPT multistart MSE: {mse}"
+
+
+def test_fit_ipopt_multi_attribute():
+    """Train a 2-attribute model with IPOPT.
+
+    Sample count is kept tight (3x3=9 points) because the symbolic ER
+    product expression scales superlinearly with sample count and IPOPT
+    becomes very slow with many samples.
+    """
+
+    def f(x):
+        return float(x[0] + x[1])
+
+    prv = [np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])]
+    crv = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    model = BRBModel(prv, crv, initial_rule_fn=f)
+
+    x1 = np.linspace(0, 2, 3)
+    x2 = np.linspace(0, 2, 3)
+    X1, X2 = np.meshgrid(x1, x2)
+    X_train = np.column_stack([X1.ravel(), X2.ravel()])
+    y_train = np.array([f(x) for x in X_train])
+
+    model.fit(X_train, y_train, fix_endpoints=True, method="ipopt")
+
+    y_pred = model.predict_values(X_train)
+    mse = float(np.mean((y_train - y_pred) ** 2))
+    assert mse < 0.5, f"IPOPT multi-attribute MSE: {mse}"
+
+
+def test_update_from_pyomo():
+    """Verify update_from_pyomo correctly extracts parameters."""
+    prv = [np.array([0.0, 1.0, 2.0])]
+    crv = np.array([0.0, 0.5, 1.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: x[0] / 2.0)
+
+    X = np.linspace(0, 2, 20).reshape(-1, 1)
+    y = X[:, 0] / 2.0
+
+    m = build_pyomo_brb_model(model, X, y, optimize_referential_values=False)
+    pyo.SolverFactory("ipopt").solve(m, tee=False)
+
+    model.update_from_pyomo(m)
+
+    y_pred = model.predict_values(X)
+    mse = float(np.mean((y - y_pred) ** 2))
+    assert mse < 0.1
+
+
 def test_pyomo_multi_attribute_builds():
     """Pyomo model builds and solves for a 2-attribute BRB (f(x1,x2)=x1+x2)."""
     prv = [np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])]

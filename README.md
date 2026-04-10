@@ -39,6 +39,25 @@ For JAX support (JIT compilation + autodiff training):
 pip install desdeo-brb[jax]
 ```
 
+### IPOPT solver (optional, for interior-point training)
+
+```bash
+pip install desdeo-brb[pyomo]
+```
+
+IPOPT binaries must be installed separately, e.g.:
+
+```bash
+apt install coinor-libipopt-dev
+# or
+conda install -c conda-forge ipopt
+```
+
+Once installed you can train with `model.fit(X, y, method="ipopt")`. The
+IPOPT backend often finds different (sometimes better) local minima than
+the default scipy optimizers, especially for models with many rules.
+Combine with `n_restarts > 1` for the best results.
+
 ## Quick start
 
 ```python
@@ -80,7 +99,7 @@ See `notebooks/01_getting_started.ipynb` for a full walkthrough with plots.
 | Symbol | Description |
 |--------|-------------|
 | `BRBModel(prv, crv, ...)` | Constructor. Pass referential values and optionally a `RuleBase`, `initial_rule_fn`, `utility_fn`, or `backend="jax"`. |
-| `.fit(X, y, method=..., optimizer_options=..., n_restarts=...)` | Train by minimizing MSE. NumPy backend supports `"SLSQP"` (default) or `"trust-constr"`; JAX backend uses `"L-BFGS-B"` with exact gradients. Pass `optimizer_options` to override defaults like `maxiter` or `ftol`. Use `n_restarts > 1` to run multiple optimizations from perturbed initial points and keep the best — strongly recommended because BRB training is non-convex with multiple local minima. |
+| `.fit(X, y, method=..., optimizer_options=..., n_restarts=...)` | Train by minimizing MSE. NumPy backend supports `"SLSQP"` (default), `"trust-constr"`, and `"ipopt"` (requires `desdeo-brb[pyomo]` and IPOPT binaries); JAX backend uses `"L-BFGS-B"` with exact gradients. Pass `optimizer_options` to override defaults like `maxiter`, `ftol`, or IPOPT's `max_iter`/`tol`. Use `n_restarts > 1` to run multiple optimizations from perturbed initial points and keep the best — strongly recommended because BRB training is non-convex with multiple local minima. |
 | `.fit_custom(loss_fn)` | Train with a user-supplied loss function. |
 | `.predict(X)` | Full inference. Returns an `InferenceResult` with all intermediate quantities. |
 | `.predict_values(X)` | Scalar outputs only, shape `(n_samples,)`. |

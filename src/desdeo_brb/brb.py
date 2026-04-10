@@ -286,11 +286,21 @@ class BRBModel:
         if self._backend == "numpy":
             if method is None:
                 method = "SLSQP"
-            if method not in ("SLSQP", "trust-constr"):
+            if method not in ("SLSQP", "trust-constr", "ipopt"):
                 raise ValueError(
-                    f"NumPy backend supports method='SLSQP' or 'trust-constr', "
-                    f"got {method!r}"
+                    f"NumPy backend supports method='SLSQP', 'trust-constr', "
+                    f"or 'ipopt', got {method!r}"
                 )
+            if method == "ipopt":
+                try:
+                    from desdeo_brb.pyomo_backend import PYOMO_AVAILABLE
+                except ImportError:
+                    PYOMO_AVAILABLE = False
+                if not PYOMO_AVAILABLE:
+                    raise ImportError(
+                        "Install Pyomo for IPOPT support: "
+                        "pip install desdeo-brb[pyomo]"
+                    )
         else:  # jax
             if method is None:
                 method = "L-BFGS-B"
@@ -302,7 +312,7 @@ class BRBModel:
         if n_restarts < 1:
             raise ValueError(f"n_restarts must be >= 1, got {n_restarts}")
 
-        def _run_one() -> None:
+        def _run_one(verbose_inner: bool = False) -> None:
             if self._backend == "jax":
                 self._fit_jax(
                     X,
@@ -311,9 +321,19 @@ class BRBModel:
                     fix_endpoint_beliefs,
                     method,
                     optimizer_options,
-                    verbose=False,
+                    verbose=verbose_inner,
                     normalize_rule_weights=normalize_rule_weights,
                     **minimize_kwargs,
+                )
+            elif method == "ipopt":
+                self._fit_pyomo(
+                    X,
+                    y,
+                    fix_endpoints,
+                    fix_endpoint_beliefs,
+                    normalize_rule_weights,
+                    optimizer_options,
+                    verbose_inner,
                 )
             else:
                 self._fit_numpy(
@@ -323,36 +343,15 @@ class BRBModel:
                     fix_endpoint_beliefs,
                     method,
                     optimizer_options,
-                    verbose=False,
+                    verbose=verbose_inner,
                     normalize_rule_weights=normalize_rule_weights,
                     **minimize_kwargs,
                 )
 
         if n_restarts == 1:
             # Single run, surface optimizer verbosity through the inner call
-            if self._backend == "jax":
-                return self._fit_jax(
-                    X,
-                    y,
-                    fix_endpoints,
-                    fix_endpoint_beliefs,
-                    method,
-                    optimizer_options,
-                    verbose,
-                    normalize_rule_weights=normalize_rule_weights,
-                    **minimize_kwargs,
-                )
-            return self._fit_numpy(
-                X,
-                y,
-                fix_endpoints,
-                fix_endpoint_beliefs,
-                method,
-                optimizer_options,
-                verbose,
-                normalize_rule_weights=normalize_rule_weights,
-                **minimize_kwargs,
-            )
+            _run_one(verbose_inner=verbose)
+            return self
 
         # Multi-start: snapshot the initial parameters, run multiple times,
         # keep the result with the lowest training MSE.
@@ -583,6 +582,170 @@ class BRBModel:
             attribute_weights=attribute_weights,
             rule_antecedent_indices=rb.rule_antecedent_indices,
         )
+
+    def _fit_pyomo(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fix_endpoints: bool,
+        fix_endpoint_beliefs: bool,
+        normalize_rule_weights: bool,
+        optimizer_options: dict | None,
+        verbose: bool,
+    ) -> None:
+        """Train via the Pyomo backend with the IPOPT interior-point solver.
+
+        Builds a Pyomo ConcreteModel, solves it with IPOPT, and pulls the
+        solved parameter values back into ``self.rule_base``.
+
+        The Pyomo model uses ``optimize_referential_values=False`` so the
+        referential values are fixed during this training run; the
+        symbolic input-transform (Path B in pyomo_backend) creates an
+        expression tree large enough that IPOPT becomes impractically
+        slow on non-trivial problems. Users who want to optimize
+        referential values can call ``build_pyomo_brb_model(...,
+        optimize_referential_values=True)`` directly and solve it
+        themselves.
+        """
+        try:
+            import pyomo.environ as pyo
+
+            from desdeo_brb.pyomo_backend import build_pyomo_brb_model
+        except ImportError as exc:  # pragma: no cover - guarded above
+            raise ImportError(
+                "Install Pyomo for IPOPT support: pip install desdeo-brb[pyomo]"
+            ) from exc
+
+        pyomo_model = build_pyomo_brb_model(
+            self,
+            X,
+            y,
+            fix_endpoints=fix_endpoints,
+            fix_endpoint_beliefs=fix_endpoint_beliefs,
+            normalize_rule_weights=normalize_rule_weights,
+            optimize_referential_values=False,
+        )
+
+        solver = pyo.SolverFactory("ipopt")
+        if not solver.available():
+            raise RuntimeError(
+                "IPOPT solver binary not found. Install IPOPT (e.g. "
+                "'apt install coinor-libipopt-dev' or "
+                "'conda install -c conda-forge ipopt')."
+            )
+
+        default_options = {
+            "max_iter": 3000,
+            "tol": 1e-8,
+            "print_level": 5 if verbose else 0,
+            "mu_strategy": "adaptive",
+        }
+        for k, v in {**default_options, **(optimizer_options or {})}.items():
+            solver.options[k] = v
+
+        result = solver.solve(pyomo_model, tee=verbose)
+
+        term = str(result.solver.termination_condition).lower()
+        if term not in ("optimal", "locally_optimal", "feasible"):
+            import warnings
+
+            warnings.warn(
+                f"IPOPT terminated with non-optimal status: "
+                f"{result.solver.termination_condition}. "
+                f"Extracting best solution found.",
+                stacklevel=3,
+            )
+
+        self.update_from_pyomo(pyomo_model)
+
+    def update_from_pyomo(self, pyomo_model) -> None:
+        """Extract solved parameter values from a Pyomo model and update the rule base.
+
+        Reads the variable values for belief degrees, rule weights,
+        attribute weights, and referential values from the Pyomo model
+        and assembles them into a fresh ``RuleBase`` (with validation).
+        Solver-tolerance violations are projected back onto the constraint
+        surface (rows renormalized to sum to 1, attribute weights clipped
+        to be non-negative, referential values sorted).
+
+        This method is the inverse of :func:`build_pyomo_brb_model` for
+        the parameter-extraction direction. Users who want to optimize a
+        custom Pyomo objective on top of the BRB structure can call::
+
+            from desdeo_brb.pyomo_backend import build_pyomo_brb_model
+            import pyomo.environ as pyo
+
+            m = build_pyomo_brb_model(brb, X, y)
+            m.del_component(m.obj)
+            m.obj = pyo.Objective(expr=my_custom_loss(m), sense=pyo.minimize)
+            pyo.SolverFactory("ipopt").solve(m)
+            brb.update_from_pyomo(m)
+        """
+        try:
+            import pyomo.environ as pyo
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "Install Pyomo: pip install desdeo-brb[pyomo]"
+            ) from exc
+
+        n_rules = pyomo_model._brb_n_rules
+        n_consequents = pyomo_model._brb_n_consequents
+        n_attributes = pyomo_model._brb_n_attributes
+        ref_value_lengths = pyomo_model._brb_ref_value_lengths
+        rule_antecedent_indices = pyomo_model._brb_rule_antecedent_indices
+        consequent_rv = pyomo_model._brb_consequent_referential_values
+
+        # Extract belief degrees and clamp + renormalize per row
+        belief_degrees = np.zeros((n_rules, n_consequents))
+        for k in range(n_rules):
+            for n in range(n_consequents):
+                belief_degrees[k, n] = float(pyo.value(pyomo_model.beta[k, n]))
+        belief_degrees = np.clip(belief_degrees, 0.0, 1.0)
+        row_sums = belief_degrees.sum(axis=1, keepdims=True)
+        row_sums = np.where(row_sums > 0, row_sums, 1.0)
+        belief_degrees = belief_degrees / row_sums
+
+        # Extract rule weights and renormalize
+        rule_weights = np.array(
+            [float(pyo.value(pyomo_model.theta[k])) for k in range(n_rules)]
+        )
+        rule_weights = np.clip(rule_weights, 0.0, 1.0)
+        rw_sum = rule_weights.sum()
+        if rw_sum > 0:
+            rule_weights = rule_weights / rw_sum
+        else:
+            rule_weights = np.full(n_rules, 1.0 / n_rules)
+
+        # Extract attribute weights and clip to non-negative
+        attribute_weights = np.zeros((n_rules, n_attributes))
+        for k in range(n_rules):
+            for i in range(n_attributes):
+                attribute_weights[k, i] = float(pyo.value(pyomo_model.delta[k, i]))
+        attribute_weights = np.clip(attribute_weights, 0.0, None)
+
+        # Extract referential values and sort each attribute's values
+        precedent_referential_values: list[np.ndarray] = []
+        for i in range(n_attributes):
+            length = int(ref_value_lengths[i])
+            rv = np.array(
+                [float(pyo.value(pyomo_model.A[i, j])) for j in range(length)]
+            )
+            rv = np.sort(rv)
+            precedent_referential_values.append(rv)
+
+        new_rule_base = RuleBase(
+            precedent_referential_values=precedent_referential_values,
+            consequent_referential_values=np.asarray(consequent_rv),
+            belief_degrees=belief_degrees,
+            rule_weights=rule_weights,
+            attribute_weights=attribute_weights,
+            rule_antecedent_indices=np.asarray(rule_antecedent_indices),
+        )
+
+        self.rule_base = new_rule_base
+        # Keep the model's cached referential value lengths in sync
+        self._precedent_referential_values = precedent_referential_values
+        self._ref_value_lengths = [len(rv) for rv in precedent_referential_values]
 
     def fit_custom(
         self,
