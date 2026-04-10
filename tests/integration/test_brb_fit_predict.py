@@ -85,6 +85,101 @@ def test_fit_custom_loss():
     assert model.belief_degrees is not initial_bd
 
 
+def test_fit_custom_mse_equivalent():
+    """fit_custom with an MSE loss should achieve a comparable training MSE."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 1.0, 2.0, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    # fit_custom with hand-written MSE
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    def custom_mse(m, X=X_train, y=y_train):
+        y_pred = m.predict_values(X)
+        return float(np.mean((y - y_pred) ** 2))
+
+    model.fit_custom(custom_mse, fix_endpoints=True)
+    mse = float(np.mean((y_train - model.predict_values(X_train)) ** 2))
+    assert mse < 0.1, f"Custom MSE too high: {mse}"
+
+
+def test_fit_custom_infringer_style():
+    """fit_custom works with a composite (INFRINGER-like) loss."""
+    prv = [np.array([0.0, 0.5, 1.0])]
+    crv = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+
+    model = BRBModel(prv, crv)
+
+    nadir = np.array([[0.0]])
+    ideal = np.array([[1.0]])
+
+    def infringer_loss(m):
+        val_nadir = m.predict_values(nadir)[0]
+        xi_nadir = val_nadir**2
+
+        val_ideal = m.predict_values(ideal)[0]
+        xi_ideal = (1.0 - val_ideal) ** 2
+
+        test_points = np.linspace(0, 1, 20).reshape(-1, 1)
+        vals = m.predict_values(test_points)
+        diffs = np.diff(vals)
+        xi_mono = float(np.sum(np.maximum(-diffs, 0) ** 2))
+
+        return float(xi_nadir + xi_ideal + xi_mono)
+
+    model.fit_custom(infringer_loss, fix_endpoints=True)
+
+    val_nadir = model.predict_values(nadir)[0]
+    val_ideal = model.predict_values(ideal)[0]
+    assert val_ideal > val_nadir, (
+        f"Ideal ({val_ideal:.3f}) should exceed nadir ({val_nadir:.3f})"
+    )
+
+
+def test_fit_custom_with_optimizer_options():
+    """fit_custom respects method and optimizer_options."""
+    prv = [np.array([0.0, 1.0, 2.0])]
+    crv = np.array([0.0, 0.5, 1.0])
+    model = BRBModel(prv, crv)
+
+    def dummy_loss(m):
+        return float(np.mean(m.predict_values(np.array([[0.5]])) ** 2))
+
+    model.fit_custom(
+        dummy_loss,
+        method="SLSQP",
+        optimizer_options={"maxiter": 100},
+    )
+
+
+def test_fit_custom_with_n_restarts():
+    """fit_custom supports n_restarts."""
+
+    def f(x):
+        return x**2
+
+    prv = [np.array([0.0, 0.5, 1.0])]
+    crv = np.array([0.0, 0.5, 1.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 1, 50).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    def custom_mse(m, X=X_train, y=y_train):
+        y_pred = m.predict_values(X)
+        return float(np.mean((y - y_pred) ** 2))
+
+    model.fit_custom(custom_mse, n_restarts=3, fix_endpoints=True)
+    mse = float(np.mean((y_train - model.predict_values(X_train)) ** 2))
+    assert mse < 0.1
+
+
 def test_sklearn_get_set_params():
     """Verify round-trip of get_params / set_params."""
     rv = [generate_uniform_referential_values(0.0, 1.0, 3)]

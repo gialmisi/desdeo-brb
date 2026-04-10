@@ -4,7 +4,6 @@ Provides the ``BRBModel`` class which supports fitting, predicting, and
 inspecting a Belief Rule-Based inference system.
 """
 
-import warnings
 from typing import Any, Callable
 
 import numpy as np
@@ -588,63 +587,164 @@ class BRBModel:
     def fit_custom(
         self,
         loss_fn: Callable[["BRBModel"], float],
+        fix_endpoints: bool = True,
+        fix_endpoint_beliefs: bool = False,
+        normalize_rule_weights: bool = True,
+        method: str = "SLSQP",
+        optimizer_options: dict | None = None,
+        n_restarts: int = 1,
         constraints: list[dict] | None = None,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
         """Train using a user-supplied loss function.
 
-        The loss function receives the model instance (with updated parameters)
-        and should return a scalar loss value.
+        The loss function receives the model instance (with updated
+        parameters) and must return a scalar loss value. The model's
+        parameters are updated internally before each call so the user
+        can simply call ``model.predict_values()`` inside the loss.
 
-        For the JAX backend, ``jax.grad`` is attempted on the loss function.
-        If the loss function is not JAX-compatible, falls back to SLSQP
-        with finite differences and emits a warning.
+        Optimization uses scipy with finite differences regardless of the
+        model's backend, since the user's loss function is opaque to JAX.
+        The structural BRB constraints (belief degree row sums, rule weight
+        sum, attribute weight bounds, referential value ordering) are
+        always enforced; users may pass additional ``constraints``.
 
         Args:
-            loss_fn: Callable with signature ``loss_fn(model) -> float``.
-            constraints: Additional SLSQP constraints (dicts with ``type``,
-                ``fun`` keys). BRB-specific constraints are always included.
-                Ignored when using the JAX/L-BFGS-B path.
-            verbose: If ``True``, print optimizer progress.
+            loss_fn: Callable ``(model) -> float`` returning the scalar loss.
+            fix_endpoints: If ``True``, fix the first and last precedent
+                referential values for each attribute.
+            fix_endpoint_beliefs: If ``True``, fix the belief degrees of
+                rules at the boundary referential values.
+            normalize_rule_weights: If ``True``, constrain rule weights to
+                sum to 1 during optimization.
+            method: scipy optimizer to use. Supported: ``"SLSQP"`` (default)
+                and ``"trust-constr"``.
+            optimizer_options: Options dict passed to ``scipy.optimize.minimize``,
+                merged with sensible per-method defaults.
+            n_restarts: Number of optimization runs from perturbed initial
+                points. The best result by ``loss_fn`` value is kept.
+            constraints: Additional constraints to add on top of the BRB
+                structural constraints. For SLSQP, list of dicts with
+                ``"type"`` / ``"fun"`` keys; for trust-constr, list of
+                ``LinearConstraint`` / ``NonlinearConstraint`` objects.
+            verbose: If ``True``, print per-restart loss.
             **minimize_kwargs: Extra keyword arguments forwarded to
                 ``scipy.optimize.minimize``.
 
         Returns:
             self
         """
-        if self._backend == "jax":
-            return self._fit_custom_jax(
-                loss_fn, constraints, verbose, **minimize_kwargs
+        if method not in ("SLSQP", "trust-constr"):
+            raise ValueError(
+                f"fit_custom supports method='SLSQP' or 'trust-constr', "
+                f"got {method!r}"
             )
-        return self._fit_custom_numpy(loss_fn, constraints, verbose, **minimize_kwargs)
+        if n_restarts < 1:
+            raise ValueError(f"n_restarts must be >= 1, got {n_restarts}")
 
-    def _fit_custom_numpy(
+        def _run_one() -> None:
+            self._fit_custom_inner(
+                loss_fn,
+                fix_endpoints,
+                fix_endpoint_beliefs,
+                normalize_rule_weights,
+                method,
+                optimizer_options,
+                constraints,
+                **minimize_kwargs,
+            )
+
+        if n_restarts == 1:
+            _run_one()
+            return self
+
+        # Multi-start: snapshot initial parameters, run multiple times,
+        # keep the rule base with the lowest loss_fn value.
+        initial_flat = self._flatten_params()
+        best_loss = float("inf")
+        best_rule_base: RuleBase | None = None
+        best_restart_index = 0
+
+        for restart in range(n_restarts):
+            if restart == 0:
+                self.rule_base = self._unflatten_params(initial_flat)
+            else:
+                rng = np.random.default_rng(restart)
+                perturbed_flat = self._perturb_params(
+                    initial_flat, rng, fix_endpoints, normalize_rule_weights
+                )
+                self.rule_base = self._unflatten_params(perturbed_flat)
+
+            _run_one()
+
+            loss = float(loss_fn(self))
+            improved = loss < best_loss
+            if improved:
+                best_loss = loss
+                best_rule_base = self.rule_base
+                best_restart_index = restart + 1
+
+            if verbose:
+                marker = " (best)" if improved else ""
+                print(f"Restart {restart + 1}/{n_restarts}: loss = {loss:.5f}{marker}")
+
+        if best_rule_base is not None:
+            self.rule_base = best_rule_base
+
+        if verbose:
+            print(f"Best result: restart {best_restart_index}, loss = {best_loss:.5f}")
+
+        return self
+
+    def _fit_custom_inner(
         self,
         loss_fn: Callable[["BRBModel"], float],
-        constraints: list[dict] | None = None,
-        verbose: bool = False,
+        fix_endpoints: bool,
+        fix_endpoint_beliefs: bool,
+        normalize_rule_weights: bool,
+        method: str,
+        optimizer_options: dict | None,
+        constraints: list | None,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
-        """NumPy custom training via SLSQP."""
+        """Run a single fit_custom optimization (no multistart)."""
         x0 = self._flatten_params()
-        bounds = self._build_bounds(fix_endpoints=False)
-        all_constraints = self._build_constraints()
+        bounds = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
+
+        if method == "SLSQP":
+            all_constraints = self._build_constraints(
+                fix_endpoint_beliefs, normalize_rule_weights
+            )
+            default_options = {
+                "maxiter": 1000,
+                "ftol": 1e-9,
+                "disp": False,
+            }
+        else:  # trust-constr
+            all_constraints = self._build_trust_constr_constraints(
+                len(x0), fix_endpoint_beliefs, normalize_rule_weights
+            )
+            default_options = {
+                "maxiter": 2000,
+                "gtol": 1e-9,
+                "verbose": 0,
+            }
+
         if constraints is not None:
-            all_constraints.extend(constraints)
+            all_constraints = list(all_constraints) + list(constraints)
+
+        legacy_options = minimize_kwargs.pop("options", {}) or {}
+        options = {**default_options, **legacy_options, **(optimizer_options or {})}
 
         def objective(flat: np.ndarray) -> float:
             self.rule_base = self._unflatten_params(flat, validate=False)
-            return loss_fn(self)
-
-        options = minimize_kwargs.pop("options", {})
-        if not verbose:
-            options.setdefault("disp", False)
+            return float(loss_fn(self))
 
         result = minimize(
             objective,
             x0,
-            method="SLSQP",
+            method=method,
             bounds=bounds,
             constraints=all_constraints,
             options=options,
@@ -653,66 +753,6 @@ class BRBModel:
 
         self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
         return self
-
-    def _fit_custom_jax(
-        self,
-        loss_fn: Callable[["BRBModel"], float],
-        constraints: list[dict] | None = None,
-        verbose: bool = False,
-        **minimize_kwargs: Any,
-    ) -> "BRBModel":
-        """JAX custom training: try jax.grad, fall back to SLSQP."""
-        import jax
-        import jax.numpy as jnp
-
-        x0 = self._flatten_params()
-
-        # Try to build a JAX-differentiable objective
-        def jax_objective(flat_jax):
-            self.rule_base = self._unflatten_params(
-                np.asarray(flat_jax), validate=False
-            )
-            return loss_fn(self)
-
-        try:
-            # Test if jax.grad works on the loss function
-            test_grad = jax.grad(jax_objective)(jnp.asarray(x0))
-            if not jnp.all(jnp.isfinite(test_grad)):
-                raise ValueError("Non-finite gradients")
-
-            grad_fn = jax.grad(jax_objective)
-
-            def objective_and_grad(flat: np.ndarray) -> tuple[float, np.ndarray]:
-                flat_jax = jnp.asarray(flat)
-                loss = float(jax_objective(flat_jax))
-                grad = np.asarray(grad_fn(flat_jax))
-                return loss, grad
-
-            bounds = self._build_bounds(fix_endpoints=False)
-            options = minimize_kwargs.pop("options", {})
-
-            result = minimize(
-                objective_and_grad,
-                x0,
-                method="L-BFGS-B",
-                jac=True,
-                bounds=bounds,
-                options=options,
-                **minimize_kwargs,
-            )
-
-            self.rule_base = self._unflatten_from_unconstrained(result.x)
-            return self
-
-        except Exception:
-            warnings.warn(
-                "Custom loss function is not JAX-differentiable. "
-                "Falling back to SLSQP with finite differences.",
-                stacklevel=2,
-            )
-            return self._fit_custom_numpy(
-                loss_fn, constraints, verbose, **minimize_kwargs
-            )
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
         """Get model parameters (sklearn-compatible).
@@ -979,17 +1019,20 @@ class BRBModel:
         bd = bd / row_sums
         flat[:bd_size] = bd.ravel()
 
-        # Rule weights: additive noise + clip + (optional) renormalize
+        # Rule weights: additive noise + clip + always renormalize.
+        # Renormalization is unconditional because the RuleBase validator
+        # always requires sum-to-1; the activation formula is scale-invariant
+        # in rule weights, so this is mathematically equivalent regardless
+        # of ``normalize_rule_weights``.
         rw_start = bd_size
         rw_end = rw_start + n_rules
         rw = flat[rw_start:rw_end] + rng.uniform(-0.1, 0.1, size=n_rules)
         rw = np.clip(rw, 0.0, 1.0)
-        if normalize_rule_weights:
-            rw_sum = rw.sum()
-            if rw_sum > 0:
-                rw = rw / rw_sum
-            else:
-                rw = np.full(n_rules, 1.0 / n_rules)
+        rw_sum = rw.sum()
+        if rw_sum > 0:
+            rw = rw / rw_sum
+        else:
+            rw = np.full(n_rules, 1.0 / n_rules)
         flat[rw_start:rw_end] = rw
 
         # Attribute weights: multiplicative factor in [0.8, 1.2]
