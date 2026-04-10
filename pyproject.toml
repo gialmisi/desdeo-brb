@@ -13,6 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 jax = ["jax", "jaxlib"]
+pyomo = ["pyomo>=6.0"]
+all = ["jax", "jaxlib", "pyomo>=6.0"]
 
 [dependency-groups]
 dev = ["pytest"]

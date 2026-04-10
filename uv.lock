@@ -39,11 +39,21 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "jax", version = "0.9.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "jaxlib", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "jaxlib", version = "0.9.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pyomo" },
+]
 jax = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "jax", version = "0.9.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "jaxlib", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "jaxlib", version = "0.9.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+pyomo = [
+    { name = "pyomo" },
 ]
 
 [package.dev-dependencies]
@@ -53,13 +63,17 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jax", marker = "extra == 'all'" },
     { name = "jax", marker = "extra == 'jax'" },
+    { name = "jaxlib", marker = "extra == 'all'" },
     { name = "jaxlib", marker = "extra == 'jax'" },
     { name = "numpy" },
     { name = "pydantic", specifier = ">=2" },
+    { name = "pyomo", marker = "extra == 'all'", specifier = ">=6.0" },
+    { name = "pyomo", marker = "extra == 'pyomo'", specifier = ">=6.0" },
     { name = "scipy" },
 ]
-provides-extras = ["jax"]
+provides-extras = ["jax", "pyomo", "all"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest" }]
@@ -559,6 +573,41 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
+]
+
+[[package]]
+name = "pyomo"
+version = "6.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/be/6aa8022dec69bf837885a094b9bc8d452debcb455ab69b66ee27cc6563e3/pyomo-6.10.0.tar.gz", hash = "sha256:672fac375e57e121ca935adcc16a1cd118be8afa1a3e5608161fb86220c3a577", size = 3171562, upload-time = "2026-02-20T21:42:31.639Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/7b/202f577bb02474fc7144a998d9539d7dabdfea215e28187b388af3be04bc/pyomo-6.10.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:17e6c8efd4a842365252e538180893abc34849671e4797fce28eb10401539551", size = 7565941, upload-time = "2026-02-20T21:48:15.53Z" },
+    { url = "https://files.pythonhosted.org/packages/24/2f/8e812419e8c9e93f94c246b110b83f77f99135a11a8c5edd1df0e36a8582/pyomo-6.10.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:93ce18a92e59d141f7cc5021fb6be265643f97e0b47bd9cabba325d1b1ba13e3", size = 7395592, upload-time = "2026-02-20T21:48:22.751Z" },
+    { url = "https://files.pythonhosted.org/packages/54/79/9556a0a1261002c5c010f6e9f48e0fc63a1f56473ba5b48abf4132f808ae/pyomo-6.10.0-cp310-cp310-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7f68592e328b8a36fdb1494d669e18d39e100398d978db64b463671e18d7fe44", size = 15200757, upload-time = "2026-02-27T17:09:11.618Z" },
+    { url = "https://files.pythonhosted.org/packages/22/04/6148cea74871f5f1cdfcd64d55c466c392f360bd7e442da957cdcd9ca508/pyomo-6.10.0-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bf84b78b40085fae86e45e58b8dc1f21ad7562082d1bf8106e5ac8762434a1de", size = 15528182, upload-time = "2026-02-20T21:48:32.132Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/72/3a283f192c9f0ea0af9d00ce6e37a093716c36da847b9ab630ba5b4caf07/pyomo-6.10.0-cp310-cp310-win_amd64.whl", hash = "sha256:f2f7372895467bdb65e90724de6c71688d96aa5f824eaa687ffdaf369e01ba97", size = 7060099, upload-time = "2026-02-20T21:48:39.542Z" },
+    { url = "https://files.pythonhosted.org/packages/05/d7/8b9075c2b68ca83b1b0abd32d89224050c54db1466c48a0b9b2657a95adf/pyomo-6.10.0-cp310-cp310-win_arm64.whl", hash = "sha256:1c63392a8ba3198de65c1ebe38f84090eb69278d81c396aaadf4f5a4e0305ee3", size = 6820517, upload-time = "2026-02-20T21:48:46.158Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/df/fd2003e8d85ce9f60b07b7b6d6576584cd36dd7ad55f489e813cc457779a/pyomo-6.10.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:4333bf38fb63d8e104207d36ccd1f0b60c7e56b68d5a868c8274afce726d8cee", size = 4428647, upload-time = "2026-02-20T21:48:52.868Z" },
+    { url = "https://files.pythonhosted.org/packages/78/8b/4795d9d96dc82a857c36f5d5363ad2a7ac2524d4bf5348453cb620be963c/pyomo-6.10.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:acdd63b0397f444a1f59aa2169892aa91eb085b7ff216be6304fc328570247cb", size = 4416123, upload-time = "2026-02-20T21:48:59.862Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/57/1398e3ff3a0ff68a5af7defa04ea2495093600485a263c335f05b20b3f74/pyomo-6.10.0-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:28c5b4a9eeb26dbc6ea21dfa46fde4dfb3200f4650123d184bc352320e6ac3dc", size = 4481866, upload-time = "2026-02-27T17:09:24.953Z" },
+    { url = "https://files.pythonhosted.org/packages/84/4c/1062945fcd586b56386b0872fb88bd5a40be8ce1ed4d1bfa3c0fbab8cf37/pyomo-6.10.0-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ce7a3572508f3c9439ec3ef88743f1bd428aac71e406bc87ab274b02a736d914", size = 4509695, upload-time = "2026-02-20T21:49:05.632Z" },
+    { url = "https://files.pythonhosted.org/packages/89/8c/bbc4cfab889eaa689e85b2ec0574bd9a584d9de89d36e22ad11bd050acf5/pyomo-6.10.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:a564996b6e3c0b425d5961186ee5d726ba59d1fb29490eb63cd32d8183859c46", size = 4430199, upload-time = "2026-02-20T21:49:11.58Z" },
+    { url = "https://files.pythonhosted.org/packages/75/3e/b5ff9b8b786741507eb899c865871c7bdac02f05eef6faa7cf625dae99b3/pyomo-6.10.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:2e686b529e81a650ac9d1458476c664ee1cf2b45a90f57acce318524f50255ad", size = 4415951, upload-time = "2026-02-20T21:49:17.426Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/6b/7371e09047b6b0c3d475545aa819415a84d579797bfe9a9b822771dc8ea2/pyomo-6.10.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5d6c7d8802b399541e611f289172c3ec721e75a029a7d3af4cc56a0e8ff6735d", size = 4484110, upload-time = "2026-02-27T17:09:34.503Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/2b/ae9f35156948b959b7d292e842fea4a08dffbf96e944e88fdcf10a3c3391/pyomo-6.10.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a5ca37402b686816704a95f72d7d6c7aa5245f38f10010828ce9d0937694f4cb", size = 4512622, upload-time = "2026-02-20T21:49:23.022Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/66/b4fe4f6f9dcdb01c8590d507a4090c7ffdb72a2832115ce07fb83b23e718/pyomo-6.10.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:376dc045e62285b42ce41706df370f2ab5ac8babb31e2750aa3bf9eb6ce938ac", size = 4430253, upload-time = "2026-02-20T21:49:28.949Z" },
+    { url = "https://files.pythonhosted.org/packages/75/01/a8c1539654b29903a98310fb34fd4caeebf67061289f552b1ea826462156/pyomo-6.10.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:4bc7b77278da187e6bcd603317cb60dd6555aeff8159c811eb9755fc873c4928", size = 4416089, upload-time = "2026-02-20T21:49:34.724Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/ef/bf19632527bba7149d5a1d18ad5a923ee4956cd2a7c6dcc595a43321ca2e/pyomo-6.10.0-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e13d6ac1c837419d2140618faeee061c7ab8e09c872005a9e75ec46bcb6c85e4", size = 4484042, upload-time = "2026-02-27T17:09:44.869Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/4e/9d523d75a64dc7ed13fd76bbf94618666456b0b69dcf1f2dc308ada982f9/pyomo-6.10.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d6dcf06214b71617d45a7cb238793171863bf0a30d9e1740190443813baee200", size = 4513077, upload-time = "2026-02-20T21:49:40.608Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/11/ebc9e817490a7992e950cca96b2671c2a490b08f9eb9e4fdc5091c6e77b8/pyomo-6.10.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:581dfe7e747c322177e64236cb3fee7fa015d7e6022f66b59394b927f0f29b0a", size = 4431213, upload-time = "2026-02-20T21:49:47.522Z" },
+    { url = "https://files.pythonhosted.org/packages/93/54/f0705ba23eab3f2287e58c3cdd34b51b18e12bbd98dc96bf57defb0eb6cd/pyomo-6.10.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:70ab5312b1aa8b95618c3766c3e3f7be3e4d730e41ce24eea1b59eb5831d6817", size = 4416909, upload-time = "2026-02-20T21:49:53.383Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/d8/57012015ead9c60815976d3aa8948f8a0bcc621ea643c0eb520b84147739/pyomo-6.10.0-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d7519673917e049ba0910fc8b19648ebf711ebec9c685c7c840d66d5471dcc0c", size = 4486590, upload-time = "2026-02-27T17:09:54.395Z" },
+    { url = "https://files.pythonhosted.org/packages/52/48/8bdf61ee998f65e2e00d65778e2a4cfe41129953a6b0ba72e7a5f5cefdc6/pyomo-6.10.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:505a1ea36f80125b878d8d0e34f3eb6af2cac3309523011caf1877d88fd16ecd", size = 4514075, upload-time = "2026-02-20T21:49:59.483Z" },
+    { url = "https://files.pythonhosted.org/packages/73/17/62983f857eb592d5ede12f0f41ddbe5d1fa17c2796fb8c3db8ac7859e177/pyomo-6.10.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:905a16f21e90b44d9a52e2aaa9884c467abf50a945d08b9ddb8db40d4d707dbc", size = 4452689, upload-time = "2026-02-20T21:50:05.288Z" },
+    { url = "https://files.pythonhosted.org/packages/67/e3/502d561a64259274c046f705e2325189e84a77c624f043f34fbd2f14e793/pyomo-6.10.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:4859fb1a0f78ac0f5fad00199244d461d7bc100c8f76a61d696a1e1461d68bb0", size = 4439487, upload-time = "2026-02-20T21:50:11.116Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/89/89164dcf7549f1034b1f8646b4b3cf6e1ec09cb0d30dfaa3fce125fd95a4/pyomo-6.10.0-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:07d69ae184c8206a4064fc13fe6b48d4a5aac7f18cbf8f6bed30faf9d3762106", size = 4479850, upload-time = "2026-02-27T17:10:04.269Z" },
+    { url = "https://files.pythonhosted.org/packages/65/bd/cb4535b0bb63a7bcc968464ab739f54d2f4d15fe7924547336f5bd299513/pyomo-6.10.0-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0590505b282468c9fc2555ced544213227a0a466bbc667826a36cc922afec6d7", size = 4506738, upload-time = "2026-02-20T21:50:17.382Z" },
+    { url = "https://files.pythonhosted.org/packages/88/1d/b5dad00739979353726059137a647acf031ef3af5557a9d227ca7b32481d/pyomo-6.10.0-py3-none-any.whl", hash = "sha256:3fc34402474f78c9144c735499c8dc6a0570948034f4c668d24727ec1b4671b1", size = 4052690, upload-time = "2026-02-27T17:10:13.653Z" },
 ]
 
 [[package]]

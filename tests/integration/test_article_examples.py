@@ -42,13 +42,14 @@ def test_xsinx2_training_improves_mse():
 
     model = BRBModel(prv, crv, initial_rule_fn=f_xsinx2)
 
-    # Training data: 1000 uniform points in [0, 3]
+    # Training data: 200 uniform points in [0, 3] (paper uses 1000 but
+    # 200 is sufficient to train the 7-rule model and keeps the test fast)
     rng = np.random.default_rng(42)
-    X_train = rng.uniform(0, 3, size=(1000, 1))
+    X_train = rng.uniform(0, 3, size=(200, 1))
     y_train = X_train[:, 0] * np.sin(X_train[:, 0] ** 2)
 
-    # Evaluation data: 1000 evenly spaced
-    X_eval = np.linspace(0, 3, 1000).reshape(-1, 1)
+    # Evaluation data: 500 evenly spaced
+    X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
     y_eval = X_eval[:, 0] * np.sin(X_eval[:, 0] ** 2)
 
     # Untrained predictions

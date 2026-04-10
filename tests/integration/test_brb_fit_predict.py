@@ -210,7 +210,7 @@ def test_fit_endpoint_fidelity():
     model = BRBModel(precedents, consequents, initial_rule_fn=lambda x: f(x[0]))
 
     rng = np.random.default_rng(42)
-    X_train = rng.uniform(0, 3, size=(1000, 1))
+    X_train = rng.uniform(0, 3, size=(200, 1))
     y_train = f(X_train[:, 0])
     model.fit(X_train, y_train, fix_endpoints=True, fix_endpoint_beliefs=True)
 
@@ -247,7 +247,7 @@ def test_fix_endpoint_beliefs_allows_training():
 
     # Train with both endpoint fixes
     rng = np.random.default_rng(42)
-    X_train = rng.uniform(0, 3, size=(1000, 1))
+    X_train = rng.uniform(0, 3, size=(200, 1))
     y_train = X_train[:, 0] * np.sin(X_train[:, 0] ** 2)
     model.fit(X_train, y_train, fix_endpoints=True, fix_endpoint_beliefs=True)
 
@@ -277,10 +277,18 @@ def test_fit_with_trust_constr():
     crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
     model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
 
-    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
     y_train = f(X_train[:, 0])
 
-    model.fit(X_train, y_train, fix_endpoints=True, method="trust-constr")
+    # Cap iterations: trust-constr otherwise runs the full default budget
+    # for this small problem and dominates total test runtime.
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        method="trust-constr",
+        optimizer_options={"maxiter": 200},
+    )
 
     X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
     y_pred = model.predict_values(X_eval)
@@ -300,7 +308,7 @@ def test_fit_with_custom_options():
     crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
     model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
 
-    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
     y_train = f(X_train[:, 0])
 
     model.fit(
@@ -329,7 +337,7 @@ def test_fit_without_rule_weight_normalization():
     crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
     model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
 
-    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
     y_train = f(X_train[:, 0])
     model.fit(
         X_train, y_train, fix_endpoints=True, normalize_rule_weights=False
@@ -358,6 +366,9 @@ def test_fit_multistart_improves():
     prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
     crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
 
+    # 1000 training points are necessary here: with smaller training sets
+    # the loss surface shifts and all the deterministically-seeded restarts
+    # land in the same basin, defeating the multistart hypothesis.
     X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
     y_train = f(X_train[:, 0])
     X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
@@ -368,9 +379,12 @@ def test_fit_multistart_improves():
     model_single.fit(X_train, y_train, fix_endpoints=True, n_restarts=1)
     mse_single = float(np.mean((y_true - model_single.predict_values(X_eval)) ** 2))
 
-    # Multi start (10 restarts — high chance of finding good basin)
+    # Multi start: 6 restarts is enough to find the good basin with very
+    # high probability. The multistart experiment showed a ~50/50 split,
+    # so 6 restarts have ~98% chance of hitting the good basin at least
+    # once on the 1000-point training set.
     model_multi = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
-    model_multi.fit(X_train, y_train, fix_endpoints=True, n_restarts=10)
+    model_multi.fit(X_train, y_train, fix_endpoints=True, n_restarts=6)
     mse_multi = float(np.mean((y_true - model_multi.predict_values(X_eval)) ** 2))
 
     assert mse_multi <= mse_single + 1e-6, (
@@ -427,7 +441,7 @@ def test_referential_values_move_during_training():
 
     interior_before = model.rule_base.precedent_referential_values[0][1:-1].copy()
 
-    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
     y_train = f(X_train[:, 0])
     model.fit(X_train, y_train, fix_endpoints=True)
 
