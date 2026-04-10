@@ -80,7 +80,7 @@ See `notebooks/01_getting_started.ipynb` for a full walkthrough with plots.
 | Symbol | Description |
 |--------|-------------|
 | `BRBModel(prv, crv, ...)` | Constructor. Pass referential values and optionally a `RuleBase`, `initial_rule_fn`, `utility_fn`, or `backend="jax"`. |
-| `.fit(X, y)` | Train by minimizing MSE. Uses SLSQP (NumPy) or L-BFGS-B with exact gradients (JAX). |
+| `.fit(X, y, method=..., optimizer_options=...)` | Train by minimizing MSE. NumPy backend supports `"SLSQP"` (default) or `"trust-constr"`; JAX backend uses `"L-BFGS-B"` with exact gradients. Pass `optimizer_options` to override defaults like `maxiter` or `ftol`. |
 | `.fit_custom(loss_fn)` | Train with a user-supplied loss function. |
 | `.predict(X)` | Full inference. Returns an `InferenceResult` with all intermediate quantities. |
 | `.predict_values(X)` | Scalar outputs only, shape `(n_samples,)`. |

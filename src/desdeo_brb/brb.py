@@ -8,7 +8,7 @@ import warnings
 from typing import Any, Callable
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import LinearConstraint, minimize
 
 from desdeo_brb.inference import (
     compute_activation_weights,
@@ -233,13 +233,17 @@ class BRBModel:
         y: np.ndarray,
         fix_endpoints: bool = True,
         fix_endpoint_beliefs: bool = False,
+        method: str | None = None,
+        optimizer_options: dict | None = None,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
         """Train the model by minimizing MSE.
 
-        Uses SLSQP with finite differences for the NumPy backend, or
-        L-BFGS-B with exact ``jax.grad`` gradients for the JAX backend.
+        For the NumPy backend, supported methods are ``"SLSQP"`` (default)
+        and ``"trust-constr"``. For the JAX backend, the only supported
+        method is ``"L-BFGS-B"`` (default), which uses exact ``jax.grad``
+        gradients.
 
         Args:
             X: Training inputs, shape ``(n_samples, n_attributes)``.
@@ -252,6 +256,12 @@ class BRBModel:
                 are known to be correct (e.g., from ``initial_rule_fn`` or
                 verified expert knowledge) to prevent the optimizer from
                 distorting endpoint predictions.
+            method: scipy.optimize.minimize method. NumPy backend supports
+                ``"SLSQP"`` and ``"trust-constr"``; JAX backend supports
+                ``"L-BFGS-B"``. If ``None``, uses the backend default.
+            optimizer_options: Options dict passed to ``scipy.optimize.minimize``
+                as the ``options`` argument. Merged with sensible per-method
+                defaults; user values override the defaults.
             verbose: If ``True``, print optimizer progress.
             **minimize_kwargs: Extra keyword arguments forwarded to
                 ``scipy.optimize.minimize``.
@@ -259,12 +269,43 @@ class BRBModel:
         Returns:
             self
         """
+        # Validate method against backend
+        if self._backend == "numpy":
+            if method is None:
+                method = "SLSQP"
+            if method not in ("SLSQP", "trust-constr"):
+                raise ValueError(
+                    f"NumPy backend supports method='SLSQP' or 'trust-constr', "
+                    f"got {method!r}"
+                )
+        else:  # jax
+            if method is None:
+                method = "L-BFGS-B"
+            if method != "L-BFGS-B":
+                raise ValueError(
+                    f"JAX backend supports method='L-BFGS-B' only, got {method!r}"
+                )
+
         if self._backend == "jax":
             return self._fit_jax(
-                X, y, fix_endpoints, fix_endpoint_beliefs, verbose, **minimize_kwargs
+                X,
+                y,
+                fix_endpoints,
+                fix_endpoint_beliefs,
+                method,
+                optimizer_options,
+                verbose,
+                **minimize_kwargs,
             )
         return self._fit_numpy(
-            X, y, fix_endpoints, fix_endpoint_beliefs, verbose, **minimize_kwargs
+            X,
+            y,
+            fix_endpoints,
+            fix_endpoint_beliefs,
+            method,
+            optimizer_options,
+            verbose,
+            **minimize_kwargs,
         )
 
     def _fit_numpy(
@@ -273,25 +314,44 @@ class BRBModel:
         y: np.ndarray,
         fix_endpoints: bool = True,
         fix_endpoint_beliefs: bool = True,
+        method: str = "SLSQP",
+        optimizer_options: dict | None = None,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
-        """NumPy training path using SLSQP."""
+        """NumPy training path using SLSQP or trust-constr."""
         x0 = self._flatten_params()
         bounds = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
-        constraints = self._build_constraints(fix_endpoint_beliefs)
+
+        if method == "SLSQP":
+            constraints = self._build_constraints(fix_endpoint_beliefs)
+            default_options = {
+                "maxiter": 1000,
+                "ftol": 1e-9,
+                "disp": verbose,
+            }
+        else:  # trust-constr
+            constraints = self._build_trust_constr_constraints(
+                len(x0), fix_endpoint_beliefs
+            )
+            default_options = {
+                "maxiter": 2000,
+                "gtol": 1e-9,
+                "verbose": 2 if verbose else 0,
+            }
+
+        # Merge user options with defaults (user wins).
+        # Also accept legacy ``options`` kwarg via minimize_kwargs.
+        legacy_options = minimize_kwargs.pop("options", {}) or {}
+        options = {**default_options, **legacy_options, **(optimizer_options or {})}
 
         def objective(flat: np.ndarray) -> float:
             return self._mse_objective(flat, X, y)
 
-        options = minimize_kwargs.pop("options", {})
-        if not verbose:
-            options.setdefault("disp", False)
-
         result = minimize(
             objective,
             x0,
-            method="SLSQP",
+            method=method,
             bounds=bounds,
             constraints=constraints,
             options=options,
@@ -307,6 +367,8 @@ class BRBModel:
         y: np.ndarray,
         fix_endpoints: bool = True,
         fix_endpoint_beliefs: bool = True,
+        method: str = "L-BFGS-B",
+        optimizer_options: dict | None = None,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
@@ -354,12 +416,17 @@ class BRBModel:
         x0 = self._flatten_params_unconstrained()
         bounds = self._build_bounds_jax(fix_endpoints, fix_endpoint_beliefs)
 
-        options = minimize_kwargs.pop("options", {})
+        default_options: dict = {
+            "maxiter": 2000,
+            "ftol": 1e-12,
+        }
+        legacy_options = minimize_kwargs.pop("options", {}) or {}
+        options = {**default_options, **legacy_options, **(optimizer_options or {})}
 
         result = minimize(
             objective_and_grad,
             x0,
-            method="L-BFGS-B",
+            method=method,
             jac=True,
             bounds=bounds,
             options=options,
@@ -913,6 +980,63 @@ class BRBModel:
 
                 constraints.append({"type": "ineq", "fun": rv_order})
             pos += length
+
+        return constraints
+
+    def _build_trust_constr_constraints(
+        self, n_params: int, fix_endpoint_beliefs: bool = False
+    ) -> list[LinearConstraint]:
+        """Build constraints in the format required by trust-constr.
+
+        Returns a list of ``LinearConstraint`` objects covering:
+        - belief degree row sums = 1 (skipping fixed boundary rules)
+        - rule weight sum = 1
+        - referential value ordering inequalities
+
+        The trust-constr method uses ``LinearConstraint`` / ``NonlinearConstraint``
+        objects rather than the dict format used by SLSQP.
+        """
+        rb = self.rule_base
+        n_rules = rb.n_rules
+        n_consequents = rb.n_consequents
+        n_attributes = rb.n_attributes
+
+        skip_bd_rules: set[int] = set()
+        if fix_endpoint_beliefs:
+            boundary = self._boundary_rule_mask()
+            skip_bd_rules = {int(i) for i in np.where(boundary)[0]}
+
+        constraints: list[LinearConstraint] = []
+
+        # Belief degree rows sum to 1 — combine all free rows into one matrix
+        free_rules = [k for k in range(n_rules) if k not in skip_bd_rules]
+        if free_rules:
+            A_bd = np.zeros((len(free_rules), n_params))
+            for row_i, k in enumerate(free_rules):
+                start = k * n_consequents
+                A_bd[row_i, start : start + n_consequents] = 1.0
+            constraints.append(LinearConstraint(A_bd, lb=1.0, ub=1.0))
+
+        # Rule weights sum to 1
+        A_rw = np.zeros((1, n_params))
+        rw_start = n_rules * n_consequents
+        A_rw[0, rw_start : rw_start + n_rules] = 1.0
+        constraints.append(LinearConstraint(A_rw, lb=1.0, ub=1.0))
+
+        # Referential value ordering: rv[j+1] - rv[j] >= 0
+        rv_offset = n_rules * n_consequents + n_rules + n_rules * n_attributes
+        ordering_rows = []
+        pos = rv_offset
+        for length in self._ref_value_lengths:
+            for j in range(length - 1):
+                row = np.zeros(n_params)
+                row[pos + j] = -1.0
+                row[pos + j + 1] = 1.0
+                ordering_rows.append(row)
+            pos += length
+        if ordering_rows:
+            A_ord = np.array(ordering_rows)
+            constraints.append(LinearConstraint(A_ord, lb=0.0, ub=np.inf))
 
         return constraints
 

@@ -1,6 +1,7 @@
 """Integration tests for the BRB fit-predict pipeline."""
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from desdeo_brb.brb import BRBModel
@@ -169,6 +170,71 @@ def test_fix_endpoint_beliefs_allows_training():
     y_endpoints = model.predict_values(np.array([[0.0], [3.0]]))
     assert_allclose(y_endpoints[0], 0.0, atol=0.15)
     assert_allclose(y_endpoints[1], f(3.0), atol=0.15)
+
+
+def test_fit_with_trust_constr():
+    """Verify training works with trust-constr method."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model.fit(X_train, y_train, fix_endpoints=True, method="trust-constr")
+
+    X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
+    y_pred = model.predict_values(X_eval)
+    y_true = f(X_eval[:, 0])
+    mse = float(np.mean((y_true - y_pred) ** 2))
+
+    assert mse < 0.05, f"trust-constr MSE too high: {mse}"
+
+
+def test_fit_with_custom_options():
+    """Verify custom optimizer options are passed through."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        method="SLSQP",
+        optimizer_options={"maxiter": 2000, "ftol": 1e-12},
+    )
+
+    X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
+    y_pred = model.predict_values(X_eval)
+    y_true = f(X_eval[:, 0])
+    mse = float(np.mean((y_true - y_pred) ** 2))
+
+    assert mse < 0.05, f"Custom options MSE too high: {mse}"
+
+
+def test_fit_invalid_method():
+    """Verify invalid method raises ValueError."""
+    prv = [np.array([0.0, 1.0, 2.0])]
+    crv = np.array([0.0, 1.0])
+    model = BRBModel(prv, crv)
+
+    X = np.array([[0.5]])
+    y = np.array([0.5])
+
+    with pytest.raises(ValueError):
+        model.fit(X, y, method="invalid_method")
 
 
 def test_referential_values_move_during_training():
