@@ -254,6 +254,55 @@ def test_fit_without_rule_weight_normalization():
     assert np.all(rw >= 0) and np.all(rw <= 1), "Rule weights out of bounds"
 
 
+def test_fit_multistart_improves():
+    """Multi-start finds a substantially better solution than single-start."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+
+    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+    X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
+    y_true = f(X_eval[:, 0])
+
+    # Single start
+    model_single = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+    model_single.fit(X_train, y_train, fix_endpoints=True, n_restarts=1)
+    mse_single = float(np.mean((y_true - model_single.predict_values(X_eval)) ** 2))
+
+    # Multi start (10 restarts — high chance of finding good basin)
+    model_multi = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+    model_multi.fit(X_train, y_train, fix_endpoints=True, n_restarts=10)
+    mse_multi = float(np.mean((y_true - model_multi.predict_values(X_eval)) ** 2))
+
+    assert mse_multi <= mse_single + 1e-6, (
+        f"multi-start {mse_multi:.5f} not <= single-start {mse_single:.5f}"
+    )
+    assert mse_multi < 0.01, f"multi-start MSE still too high: {mse_multi:.5f}"
+
+
+def test_fit_multistart_n1_backward_compatible():
+    """n_restarts=1 (the default) trains correctly."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+    X_train = np.linspace(0, 3, 100).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model.fit(X_train, y_train, fix_endpoints=True, n_restarts=1)
+    y_pred = model.predict_values(X_train)
+    mse = float(np.mean((y_train - y_pred) ** 2))
+    assert mse < 0.1
+
+
 def test_fit_invalid_method():
     """Verify invalid method raises ValueError."""
     prv = [np.array([0.0, 1.0, 2.0])]

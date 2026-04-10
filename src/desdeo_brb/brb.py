@@ -236,6 +236,7 @@ class BRBModel:
         normalize_rule_weights: bool = True,
         method: str | None = None,
         optimizer_options: dict | None = None,
+        n_restarts: int = 1,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
@@ -269,6 +270,12 @@ class BRBModel:
             optimizer_options: Options dict passed to ``scipy.optimize.minimize``
                 as the ``options`` argument. Merged with sensible per-method
                 defaults; user values override the defaults.
+            n_restarts: Number of optimization runs (default 1). When > 1,
+                the first run uses the unperturbed initial parameters and
+                subsequent runs perturb the initial parameters with seeded
+                random noise. The final model is the best of all runs as
+                measured by training MSE. Multi-start is critical for
+                escaping bad local minima.
             verbose: If ``True``, print optimizer progress.
             **minimize_kwargs: Extra keyword arguments forwarded to
                 ``scipy.optimize.minimize``.
@@ -293,8 +300,50 @@ class BRBModel:
                     f"JAX backend supports method='L-BFGS-B' only, got {method!r}"
                 )
 
-        if self._backend == "jax":
-            return self._fit_jax(
+        if n_restarts < 1:
+            raise ValueError(f"n_restarts must be >= 1, got {n_restarts}")
+
+        def _run_one() -> None:
+            if self._backend == "jax":
+                self._fit_jax(
+                    X,
+                    y,
+                    fix_endpoints,
+                    fix_endpoint_beliefs,
+                    method,
+                    optimizer_options,
+                    verbose=False,
+                    normalize_rule_weights=normalize_rule_weights,
+                    **minimize_kwargs,
+                )
+            else:
+                self._fit_numpy(
+                    X,
+                    y,
+                    fix_endpoints,
+                    fix_endpoint_beliefs,
+                    method,
+                    optimizer_options,
+                    verbose=False,
+                    normalize_rule_weights=normalize_rule_weights,
+                    **minimize_kwargs,
+                )
+
+        if n_restarts == 1:
+            # Single run, surface optimizer verbosity through the inner call
+            if self._backend == "jax":
+                return self._fit_jax(
+                    X,
+                    y,
+                    fix_endpoints,
+                    fix_endpoint_beliefs,
+                    method,
+                    optimizer_options,
+                    verbose,
+                    normalize_rule_weights=normalize_rule_weights,
+                    **minimize_kwargs,
+                )
+            return self._fit_numpy(
                 X,
                 y,
                 fix_endpoints,
@@ -305,17 +354,46 @@ class BRBModel:
                 normalize_rule_weights=normalize_rule_weights,
                 **minimize_kwargs,
             )
-        return self._fit_numpy(
-            X,
-            y,
-            fix_endpoints,
-            fix_endpoint_beliefs,
-            method,
-            optimizer_options,
-            verbose,
-            normalize_rule_weights=normalize_rule_weights,
-            **minimize_kwargs,
-        )
+
+        # Multi-start: snapshot the initial parameters, run multiple times,
+        # keep the result with the lowest training MSE.
+        initial_flat = self._flatten_params()
+
+        best_mse = float("inf")
+        best_rule_base: RuleBase | None = None
+        best_restart_index = 0
+
+        for restart in range(n_restarts):
+            if restart == 0:
+                self.rule_base = self._unflatten_params(initial_flat)
+            else:
+                rng = np.random.default_rng(restart)
+                perturbed_flat = self._perturb_params(
+                    initial_flat, rng, fix_endpoints, normalize_rule_weights
+                )
+                self.rule_base = self._unflatten_params(perturbed_flat)
+
+            _run_one()
+
+            y_pred = self.predict_values(X)
+            mse = float(np.mean((y - y_pred) ** 2))
+            improved = mse < best_mse
+            if improved:
+                best_mse = mse
+                best_rule_base = self.rule_base
+                best_restart_index = restart + 1
+
+            if verbose:
+                marker = " (best)" if improved else ""
+                print(f"Restart {restart + 1}/{n_restarts}: MSE = {mse:.5f}{marker}")
+
+        if best_rule_base is not None:
+            self.rule_base = best_rule_base
+
+        if verbose:
+            print(f"Best result: restart {best_restart_index}, MSE = {best_mse:.5f}")
+
+        return self
 
     def _fit_numpy(
         self,
@@ -863,6 +941,80 @@ class BRBModel:
         if validate:
             return RuleBase(**fields)
         return RuleBase.model_construct(**fields)
+
+    def _perturb_params(
+        self,
+        flat_params: np.ndarray,
+        rng: np.random.Generator,
+        fix_endpoints: bool,
+        normalize_rule_weights: bool = True,
+    ) -> np.ndarray:
+        """Perturb a flat parameter vector to produce a valid restart point.
+
+        Belief degrees get additive uniform noise in [-0.1, 0.1] and rows are
+        re-normalized to sum to 1. Rule weights get the same treatment (and
+        are renormalized if ``normalize_rule_weights`` is True). Attribute
+        weights get a multiplicative factor in [0.8, 1.2]. Interior
+        referential values get additive noise scaled to ±10% of the average
+        spacing, then are re-sorted to maintain ordering. Endpoints stay
+        fixed when ``fix_endpoints`` is True.
+
+        The returned vector satisfies all constraints, so it can be passed
+        to ``_unflatten_params`` and used as an optimizer starting point.
+        """
+        rb = self.rule_base
+        n_rules = rb.n_rules
+        n_consequents = rb.n_consequents
+        n_attributes = rb.n_attributes
+
+        flat = flat_params.copy()
+
+        # Belief degrees: additive noise + clip + row renormalize
+        bd_size = n_rules * n_consequents
+        bd = flat[:bd_size].reshape(n_rules, n_consequents)
+        bd = bd + rng.uniform(-0.1, 0.1, size=bd.shape)
+        bd = np.clip(bd, 0.0, 1.0)
+        row_sums = bd.sum(axis=1, keepdims=True)
+        row_sums = np.where(row_sums > 0, row_sums, 1.0)
+        bd = bd / row_sums
+        flat[:bd_size] = bd.ravel()
+
+        # Rule weights: additive noise + clip + (optional) renormalize
+        rw_start = bd_size
+        rw_end = rw_start + n_rules
+        rw = flat[rw_start:rw_end] + rng.uniform(-0.1, 0.1, size=n_rules)
+        rw = np.clip(rw, 0.0, 1.0)
+        if normalize_rule_weights:
+            rw_sum = rw.sum()
+            if rw_sum > 0:
+                rw = rw / rw_sum
+            else:
+                rw = np.full(n_rules, 1.0 / n_rules)
+        flat[rw_start:rw_end] = rw
+
+        # Attribute weights: multiplicative factor in [0.8, 1.2]
+        aw_start = rw_end
+        aw_end = aw_start + n_rules * n_attributes
+        aw_factors = rng.uniform(0.8, 1.2, size=n_rules * n_attributes)
+        flat[aw_start:aw_end] = np.maximum(flat[aw_start:aw_end] * aw_factors, 0.0)
+
+        # Referential values: additive noise scaled to ±10% of mean spacing
+        pos = aw_end
+        for length in self._ref_value_lengths:
+            rv = flat[pos : pos + length].copy()
+            if length > 1:
+                spacing = (rv[-1] - rv[0]) / (length - 1)
+            else:
+                spacing = 0.0
+            noise = rng.uniform(-0.1, 0.1, size=length) * spacing
+            if fix_endpoints:
+                noise[0] = 0.0
+                noise[-1] = 0.0
+            rv_perturbed = np.sort(rv + noise)
+            flat[pos : pos + length] = rv_perturbed
+            pos += length
+
+        return flat
 
     def _normalize_flat(self, flat: np.ndarray) -> np.ndarray:
         """Project a flat parameter vector onto the constraint surface.
