@@ -29,3 +29,7 @@ Thumbs.db
 
 # uv
 .python-version
+
+# Jupyter
+.ipynb_checkpoints/
+*-checkpoint.ipynb

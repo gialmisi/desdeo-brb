@@ -101,6 +101,112 @@ def test_sklearn_get_set_params():
     assert new_params["utility_fn"] is not None
 
 
+def test_fit_endpoint_fidelity():
+    """After training with fix_endpoints=True, predictions at the
+    exact endpoint referential values should closely match the
+    true function values."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    precedents = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    consequents = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(precedents, consequents, initial_rule_fn=lambda x: f(x[0]))
+
+    rng = np.random.default_rng(42)
+    X_train = rng.uniform(0, 3, size=(1000, 1))
+    y_train = f(X_train[:, 0])
+    model.fit(X_train, y_train, fix_endpoints=True, fix_endpoint_beliefs=True)
+
+    # Predict at endpoints
+    X_endpoints = np.array([[0.0], [3.0]])
+    y_pred = model.predict_values(X_endpoints)
+    y_true = f(X_endpoints[:, 0])
+
+    # Endpoints should be close to true values
+    assert_allclose(
+        y_pred,
+        y_true,
+        atol=0.15,
+        err_msg="Trained model diverges from true function at endpoints",
+    )
+
+
+def test_fix_endpoint_beliefs_allows_training():
+    """Verify that fix_endpoint_beliefs=True still allows meaningful training."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
+    y_true = X_eval[:, 0] * np.sin(X_eval[:, 0] ** 2)
+
+    # Untrained MSE
+    y_untrained = model.predict_values(X_eval)
+    mse_before = float(np.mean((y_true - y_untrained) ** 2))
+
+    # Train with both endpoint fixes
+    rng = np.random.default_rng(42)
+    X_train = rng.uniform(0, 3, size=(1000, 1))
+    y_train = X_train[:, 0] * np.sin(X_train[:, 0] ** 2)
+    model.fit(X_train, y_train, fix_endpoints=True, fix_endpoint_beliefs=True)
+
+    # Trained MSE
+    y_trained = model.predict_values(X_eval)
+    mse_after = float(np.mean((y_true - y_trained) ** 2))
+
+    # Training must have actually improved the model
+    assert mse_after < mse_before, (
+        f"MSE did not improve: {mse_before:.4f} -> {mse_after:.4f}"
+    )
+    assert mse_after < 0.2, f"Trained MSE too high: {mse_after:.4f}"
+
+    # Endpoint beliefs should be preserved
+    y_endpoints = model.predict_values(np.array([[0.0], [3.0]]))
+    assert_allclose(y_endpoints[0], 0.0, atol=0.15)
+    assert_allclose(y_endpoints[1], f(3.0), atol=0.15)
+
+
+def test_referential_values_move_during_training():
+    """Verify that interior referential values shift during training.
+
+    When fix_endpoints=True, the first and last referential values are fixed
+    but the interior ones should move to better capture the function's shape.
+    """
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    interior_before = model.rule_base.precedent_referential_values[0][1:-1].copy()
+
+    X_train = np.linspace(0, 3, 1000).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+    model.fit(X_train, y_train, fix_endpoints=True)
+
+    rv_after = model.rule_base.precedent_referential_values[0]
+    interior_after = rv_after[1:-1]
+
+    # Endpoints must be fixed
+    assert rv_after[0] == 0.0
+    assert rv_after[-1] == 3.0
+
+    # Interior values must have moved
+    assert not np.allclose(interior_before, interior_after, atol=0.01), (
+        f"Interior referential values did not move: {interior_after}"
+    )
+
+    # Referential values must remain sorted
+    assert np.all(np.diff(rv_after) >= -1e-10)
+
+
 def test_varying_referential_value_lengths():
     """Two attributes with 3 and 5 referential values; predict works."""
     rv = [

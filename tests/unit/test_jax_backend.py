@@ -32,8 +32,8 @@ def _make_test_data():
     """Create consistent test data for NumPy/JAX comparison."""
     rng = np.random.default_rng(123)
     ref_values = [np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 0.5, 1.0])]
-    X = rng.uniform(0, 3, size=(5, 2))
-    X[:, 1] = np.clip(X[:, 1], 0, 1)
+    X = rng.uniform(-1, 4, size=(7, 2))  # includes out-of-range values
+    X[:, 1] = np.clip(X[:, 1], -0.5, 1.5)  # some out-of-range for attr 1 too
 
     rule_indices = build_rule_antecedent_indices(ref_values)
     n_rules = len(rule_indices)
@@ -198,7 +198,7 @@ def test_full_inference_jax_is_jittable():
         2,
         rv_lengths_tuple,
     )
-    assert output.shape == (5,)
+    assert output.shape == (7,)
     assert jnp.all(jnp.isfinite(output))
 
 

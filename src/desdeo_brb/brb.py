@@ -232,6 +232,7 @@ class BRBModel:
         X: np.ndarray,
         y: np.ndarray,
         fix_endpoints: bool = True,
+        fix_endpoint_beliefs: bool = False,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
@@ -245,6 +246,12 @@ class BRBModel:
             y: Target values, shape ``(n_samples,)``.
             fix_endpoints: If ``True``, fix the first and last precedent
                 referential values (endpoints of each attribute's range).
+            fix_endpoint_beliefs: If ``True``, also fix the belief degrees
+                for rules at the boundary referential values during training.
+                Use this when the initial beliefs at the domain boundaries
+                are known to be correct (e.g., from ``initial_rule_fn`` or
+                verified expert knowledge) to prevent the optimizer from
+                distorting endpoint predictions.
             verbose: If ``True``, print optimizer progress.
             **minimize_kwargs: Extra keyword arguments forwarded to
                 ``scipy.optimize.minimize``.
@@ -253,21 +260,26 @@ class BRBModel:
             self
         """
         if self._backend == "jax":
-            return self._fit_jax(X, y, fix_endpoints, verbose, **minimize_kwargs)
-        return self._fit_numpy(X, y, fix_endpoints, verbose, **minimize_kwargs)
+            return self._fit_jax(
+                X, y, fix_endpoints, fix_endpoint_beliefs, verbose, **minimize_kwargs
+            )
+        return self._fit_numpy(
+            X, y, fix_endpoints, fix_endpoint_beliefs, verbose, **minimize_kwargs
+        )
 
     def _fit_numpy(
         self,
         X: np.ndarray,
         y: np.ndarray,
         fix_endpoints: bool = True,
+        fix_endpoint_beliefs: bool = True,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
         """NumPy training path using SLSQP."""
         x0 = self._flatten_params()
-        bounds = self._build_bounds(fix_endpoints)
-        constraints = self._build_constraints()
+        bounds = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
+        constraints = self._build_constraints(fix_endpoint_beliefs)
 
         def objective(flat: np.ndarray) -> float:
             return self._mse_objective(flat, X, y)
@@ -294,6 +306,7 @@ class BRBModel:
         X: np.ndarray,
         y: np.ndarray,
         fix_endpoints: bool = True,
+        fix_endpoint_beliefs: bool = True,
         verbose: bool = False,
         **minimize_kwargs: Any,
     ) -> "BRBModel":
@@ -339,7 +352,7 @@ class BRBModel:
         # Transform initial params to unconstrained space matching the
         # softmax/softplus reparameterization in full_inference_jax.
         x0 = self._flatten_params_unconstrained()
-        bounds = self._build_bounds_jax(fix_endpoints)
+        bounds = self._build_bounds_jax(fix_endpoints, fix_endpoint_beliefs)
 
         options = minimize_kwargs.pop("options", {})
 
@@ -652,13 +665,15 @@ class BRBModel:
         return np.concatenate(parts)
 
     def _build_bounds_jax(
-        self, fix_endpoints: bool
+        self, fix_endpoints: bool, fix_endpoint_beliefs: bool = False
     ) -> list[tuple[float | None, float | None]]:
         """Construct bounds for the JAX/L-BFGS-B optimizer.
 
         Since belief degrees and rule weights use softmax reparameterization
         and attribute weights use softplus, those parameters are unconstrained.
-        Only referential values have meaningful bounds.
+        Only referential values have meaningful bounds. When
+        ``fix_endpoint_beliefs`` is True, boundary rule belief logits are
+        also fixed.
         """
         rb = self.rule_base
         n_rules = rb.n_rules
@@ -666,8 +681,20 @@ class BRBModel:
         n_attributes = rb.n_attributes
         bounds: list[tuple[float | None, float | None]] = []
 
-        # Belief degrees (unconstrained logits): no bounds
-        bounds.extend([(None, None)] * (n_rules * n_consequents))
+        # Belief degrees (unconstrained logits)
+        if fix_endpoint_beliefs:
+            boundary = self._boundary_rule_mask()
+            eps = 1e-12
+            bd_log = np.log(np.clip(rb.belief_degrees, eps, None))
+            for k in range(n_rules):
+                for c in range(n_consequents):
+                    if boundary[k]:
+                        val = float(bd_log[k, c])
+                        bounds.append((val, val))
+                    else:
+                        bounds.append((None, None))
+        else:
+            bounds.extend([(None, None)] * (n_rules * n_consequents))
 
         # Rule weights (unconstrained logits): no bounds
         bounds.extend([(None, None)] * n_rules)
@@ -778,7 +805,21 @@ class BRBModel:
 
         return flat
 
-    def _build_bounds(self, fix_endpoints: bool) -> list[tuple[float, float]]:
+    def _boundary_rule_mask(self) -> np.ndarray:
+        """Return a boolean mask of shape (n_rules,) that is True for rules
+        whose antecedents include a boundary (first or last) referential value
+        for any attribute."""
+        rb = self.rule_base
+        mask = np.zeros(rb.n_rules, dtype=bool)
+        for i in range(rb.n_attributes):
+            max_idx = len(rb.precedent_referential_values[i]) - 1
+            col = rb.rule_antecedent_indices[:, i]
+            mask |= (col == 0) | (col == max_idx)
+        return mask
+
+    def _build_bounds(
+        self, fix_endpoints: bool, fix_endpoint_beliefs: bool = False
+    ) -> list[tuple[float, float]]:
         """Construct per-element bounds for the optimizer."""
         rb = self.rule_base
         n_rules = rb.n_rules
@@ -786,8 +827,18 @@ class BRBModel:
         n_attributes = rb.n_attributes
         bounds: list[tuple[float, float]] = []
 
-        # belief_degrees: each element in [0, 1]
-        bounds.extend([(0.0, 1.0)] * (n_rules * n_consequents))
+        # belief_degrees: each element in [0, 1], but fix boundary rule beliefs
+        if fix_endpoint_beliefs:
+            boundary = self._boundary_rule_mask()
+            for k in range(n_rules):
+                for c in range(n_consequents):
+                    if boundary[k]:
+                        val = float(rb.belief_degrees[k, c])
+                        bounds.append((val, val))
+                    else:
+                        bounds.append((0.0, 1.0))
+        else:
+            bounds.extend([(0.0, 1.0)] * (n_rules * n_consequents))
 
         # rule_weights: each element in [0, 1]
         bounds.extend([(0.0, 1.0)] * n_rules)
@@ -807,18 +858,29 @@ class BRBModel:
 
         return bounds
 
-    def _build_constraints(self) -> list[dict]:
+    def _build_constraints(
+        self, fix_endpoint_beliefs: bool = False
+    ) -> list[dict]:
         """Construct SLSQP equality constraints for parameter normalization."""
         rb = self.rule_base
         n_rules = rb.n_rules
         n_consequents = rb.n_consequents
         n_attributes = rb.n_attributes
 
+        # When endpoint beliefs are fixed via bounds, skip their sum-to-1
+        # constraints to avoid a singular Jacobian in SLSQP.
+        skip_bd_rules: set[int] = set()
+        if fix_endpoint_beliefs:
+            boundary = self._boundary_rule_mask()
+            skip_bd_rules = set(int(i) for i in np.where(boundary)[0])
+
         constraints: list[dict] = []
 
-        # Belief degree rows sum to 1
+        # Belief degree rows sum to 1 (skip fixed boundary rules)
         bd_offset = 0
         for k in range(n_rules):
+            if k in skip_bd_rules:
+                continue
             row_start = bd_offset + k * n_consequents
             row_end = row_start + n_consequents
 

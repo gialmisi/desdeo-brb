@@ -60,9 +60,10 @@ def input_transform_jax(
 
         alpha = jnp.zeros((n_samples, max_rv))
 
+        # Clamp inputs to referential value range (RIMER boundary condition)
         rv_min = safe_rv[0]
         rv_max = safe_rv[length - 1] if length > 1 else safe_rv[0]
-        in_range = (h >= rv_min) & (h <= rv_max)
+        h = jnp.clip(h, rv_min, rv_max)
 
         # Find interval via cumulative comparison
         le_count = jnp.sum(
@@ -80,10 +81,10 @@ def input_transform_jax(
         alpha_lower = 1.0 - alpha_upper
 
         rows = jnp.arange(n_samples)
-        alpha = alpha.at[rows, j].set(jnp.where(in_range, alpha_lower, 0.0))
+        alpha = alpha.at[rows, j].set(alpha_lower)
         j1_clamped = jnp.minimum(j + 1, max_rv - 1)
         alpha = alpha.at[rows, j1_clamped].set(
-            jnp.where(in_range & (j + 1 < length), alpha_upper, 0.0)
+            jnp.where(j + 1 < length, alpha_upper, 0.0)
         )
 
         alpha = alpha * valid[jnp.newaxis, :]

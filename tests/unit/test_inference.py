@@ -31,14 +31,43 @@ def test_input_transform_between_values():
 
 
 def test_input_transform_outside_range():
-    """Input outside the referential value range gives all zeros."""
+    """Input outside range is clamped to the nearest boundary (RIMER spec)."""
     rv = [np.array([0.0, 0.5, 1.0])]
     X_below = np.array([[-0.1]])
     X_above = np.array([[1.1]])
     alphas_below = input_transform(X_below, rv)
     alphas_above = input_transform(X_above, rv)
-    assert_allclose(alphas_below[0][0], [0.0, 0.0, 0.0])
-    assert_allclose(alphas_above[0][0], [0.0, 0.0, 0.0])
+    # Below range -> belief 1.0 at first referential value
+    assert_allclose(alphas_below[0][0], [1.0, 0.0, 0.0])
+    # Above range -> belief 1.0 at last referential value
+    assert_allclose(alphas_above[0][0], [0.0, 0.0, 1.0])
+
+
+def test_input_transform_boundary_clamping():
+    """Verify inputs outside referential value range are clamped to boundaries."""
+    rv = [np.array([0.0, 1.0, 2.0, 3.0])]
+
+    # Well below range
+    X = np.array([[-5.0]])
+    alphas = input_transform(X, rv)
+    assert alphas[0][0, 0] == 1.0
+    assert np.sum(alphas[0][0, 1:]) == 0.0
+
+    # Well above range
+    X = np.array([[10.0]])
+    alphas = input_transform(X, rv)
+    assert alphas[0][0, -1] == 1.0
+    assert np.sum(alphas[0][0, :-1]) == 0.0
+
+    # Slightly below range
+    X = np.array([[-0.001]])
+    alphas = input_transform(X, rv)
+    assert alphas[0][0, 0] == 1.0
+
+    # Slightly above range
+    X = np.array([[3.001]])
+    alphas = input_transform(X, rv)
+    assert alphas[0][0, -1] == 1.0
 
 
 def test_input_transform_varying_lengths():

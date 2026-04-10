@@ -32,28 +32,27 @@ def input_transform(
         degrees for each sample over the *i*-th attribute's referential values.
 
     Notes:
-        When an input falls outside the referential value range for an
-        attribute, all belief degrees for that attribute are zero.
-        At most two adjacent referential values receive nonzero belief,
-        and they sum to 1 when the input is within range.
+        Following the RIMER wrapping boundary conditions (Yang et al. 2006),
+        inputs outside the referential value range are clamped to the nearest
+        boundary. This means inputs below the minimum get belief degree 1.0
+        at the first referential value, and inputs above the maximum get
+        belief degree 1.0 at the last referential value. At most two adjacent
+        referential values receive nonzero belief, and they always sum to 1.
     """
     n_samples = X.shape[0]
     alphas: list[np.ndarray] = []
 
     for i, rv in enumerate(referential_values):
-        h = X[:, i]  # (n_samples,)
         n_rv = len(rv)
         alpha = np.zeros((n_samples, n_rv))
 
-        # Inputs outside the referential value range get all-zero beliefs
-        in_range = (h >= rv[0]) & (h <= rv[-1])
+        # Clamp inputs to the referential value range (RIMER boundary condition)
+        h = np.clip(X[:, i], rv[0], rv[-1])
 
         if n_rv == 1:
-            # Single referential value: exact match only
-            alpha[:, 0] = np.where(h == rv[0], 1.0, 0.0)
+            alpha[:, 0] = 1.0
         else:
             # Find the interval: j such that rv[j] <= h < rv[j+1]
-            # np.searchsorted gives the insertion point; subtract 1 to get lower bound
             j = np.searchsorted(rv, h, side="right") - 1
             j = np.clip(j, 0, n_rv - 2)
 
@@ -65,10 +64,9 @@ def input_transform(
             alpha_upper = np.where(denom > 0, (h - rv[j]) / safe_denom, 0.0)
             alpha_lower = 1.0 - alpha_upper
 
-            # Place beliefs at the two adjacent positions
             rows = np.arange(n_samples)
-            alpha[rows, j] = np.where(in_range, alpha_lower, 0.0)
-            alpha[rows, j + 1] = np.where(in_range, alpha_upper, 0.0)
+            alpha[rows, j] = alpha_lower
+            alpha[rows, j + 1] = alpha_upper
 
         alphas.append(alpha)
 
