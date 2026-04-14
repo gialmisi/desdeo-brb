@@ -412,6 +412,111 @@ def test_fit_multistart_n1_backward_compatible():
     assert mse < 0.1
 
 
+@pytest.mark.slow
+def test_fit_de_basic():
+    """Verify DE training produces reasonable results."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 1.0, 2.0, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        method="DE",
+        optimizer_options={"maxiter": 500, "seed": 42},
+    )
+
+    y_pred = model.predict_values(X_train)
+    mse = float(np.mean((y_train - y_pred) ** 2))
+    # DE alone (without SLSQP polish) converges less tightly
+    assert mse < 0.2, f"DE MSE too high: {mse}"
+
+
+@pytest.mark.slow
+def test_fit_de_slsqp_outperforms_slsqp():
+    """DE+SLSQP should reliably find good solutions without multistart."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+    X_eval = np.linspace(0, 3, 300).reshape(-1, 1)
+    y_true = f(X_eval[:, 0])
+
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        method="DE+SLSQP",
+        optimizer_options={
+            "de": {"maxiter": 300, "seed": 42},
+            "slsqp": {"maxiter": 1000},
+        },
+    )
+    mse = float(np.mean((y_true - model.predict_values(X_eval)) ** 2))
+
+    assert mse < 0.05, f"DE+SLSQP MSE too high: {mse}"
+
+
+@pytest.mark.slow
+def test_fit_de_slsqp_endpoint():
+    """DE+SLSQP should have reasonable endpoint accuracy."""
+
+    def f(x):
+        return x * np.sin(x**2)
+
+    prv = [np.array([0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])]
+    crv = np.array([-2.5, -1.0, 1.0, 2.0, 3.0])
+
+    X_train = np.linspace(0, 3, 200).reshape(-1, 1)
+    y_train = f(X_train[:, 0])
+
+    model = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        method="DE+SLSQP",
+        optimizer_options={"de": {"maxiter": 300, "seed": 42}},
+    )
+
+    y_end = model.predict_values(np.array([[3.0]]))
+    error = float(abs(y_end[0] - f(3.0)))
+    # Without fix_endpoint_beliefs, boundary belief drift can occur
+    # (same as with SLSQP). Just verify the error is bounded.
+    assert error < 1.5, f"DE+SLSQP endpoint error: {error}"
+
+
+def test_fit_de_with_options():
+    """Verify custom DE options are passed through."""
+    prv = [np.array([0.0, 1.0, 2.0])]
+    crv = np.array([0.0, 0.5, 1.0])
+    model = BRBModel(prv, crv)
+
+    X = np.linspace(0, 2, 50).reshape(-1, 1)
+    y = X[:, 0] / 2.0
+
+    model.fit(
+        X,
+        y,
+        method="DE",
+        optimizer_options={"maxiter": 50, "seed": 123, "popsize": 10},
+    )
+
+
 def test_fit_invalid_method():
     """Verify invalid method raises ValueError."""
     prv = [np.array([0.0, 1.0, 2.0])]

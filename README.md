@@ -99,7 +99,7 @@ See `notebooks/01_getting_started.ipynb` for a full walkthrough with plots.
 | Symbol | Description |
 |--------|-------------|
 | `BRBModel(prv, crv, ...)` | Constructor. Pass referential values and optionally a `RuleBase`, `initial_rule_fn`, `utility_fn`, or `backend="jax"`. |
-| `.fit(X, y, method=..., optimizer_options=..., n_restarts=...)` | Train by minimizing MSE. NumPy backend supports `"SLSQP"` (default), `"trust-constr"`, and `"ipopt"` (requires `desdeo-brb[pyomo]` and IPOPT binaries); JAX backend uses `"L-BFGS-B"` with exact gradients. Pass `optimizer_options` to override defaults like `maxiter`, `ftol`, or IPOPT's `max_iter`/`tol`. Use `n_restarts > 1` to run multiple optimizations from perturbed initial points and keep the best — strongly recommended because BRB training is non-convex with multiple local minima. |
+| `.fit(X, y, method=..., optimizer_options=..., n_restarts=...)` | Train by minimizing MSE. NumPy backend supports `"SLSQP"` (default), `"trust-constr"`, `"DE"` (differential evolution), `"DE+SLSQP"` (global search then local polish), and `"ipopt"` (requires `desdeo-brb[pyomo]`); JAX backend uses `"L-BFGS-B"` with exact gradients. `"DE+SLSQP"` is recommended for reliable training without needing `n_restarts`. Pass `optimizer_options` to override defaults; for `"DE+SLSQP"` use sub-dicts `{"de": {...}, "slsqp": {...}}`. |
 | `.fit_custom(loss_fn)` | Train with a user-supplied loss function. |
 | `.predict(X)` | Full inference. Returns an `InferenceResult` with all intermediate quantities. |
 | `.predict_values(X)` | Scalar outputs only, shape `(n_samples,)`. |

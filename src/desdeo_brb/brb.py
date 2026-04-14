@@ -7,7 +7,7 @@ inspecting a Belief Rule-Based inference system.
 from typing import Any, Callable
 
 import numpy as np
-from scipy.optimize import LinearConstraint, minimize
+from scipy.optimize import LinearConstraint, differential_evolution, minimize
 
 from desdeo_brb.inference import (
     compute_activation_weights,
@@ -286,10 +286,10 @@ class BRBModel:
         if self._backend == "numpy":
             if method is None:
                 method = "SLSQP"
-            if method not in ("SLSQP", "trust-constr", "ipopt"):
+            valid_numpy = ("SLSQP", "trust-constr", "ipopt", "DE", "DE+SLSQP")
+            if method not in valid_numpy:
                 raise ValueError(
-                    f"NumPy backend supports method='SLSQP', 'trust-constr', "
-                    f"or 'ipopt', got {method!r}"
+                    f"NumPy backend supports methods {valid_numpy}, got {method!r}"
                 )
             if method == "ipopt":
                 try:
@@ -327,6 +327,26 @@ class BRBModel:
                 )
             elif method == "ipopt":
                 self._fit_pyomo(
+                    X,
+                    y,
+                    fix_endpoints,
+                    fix_endpoint_beliefs,
+                    normalize_rule_weights,
+                    optimizer_options,
+                    verbose_inner,
+                )
+            elif method == "DE":
+                self._fit_de(
+                    X,
+                    y,
+                    fix_endpoints,
+                    fix_endpoint_beliefs,
+                    normalize_rule_weights,
+                    optimizer_options,
+                    verbose_inner,
+                )
+            elif method == "DE+SLSQP":
+                self._fit_de_slsqp(
                     X,
                     y,
                     fix_endpoints,
@@ -657,6 +677,107 @@ class BRBModel:
             )
 
         self.update_from_pyomo(pyomo_model)
+
+    def _fit_de(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fix_endpoints: bool,
+        fix_endpoint_beliefs: bool,
+        normalize_rule_weights: bool,
+        optimizer_options: dict | None,
+        verbose: bool,
+    ) -> None:
+        """Train via Differential Evolution (global optimizer).
+
+        DE runs with box bounds only — no equality constraints during the
+        search, because the BRB equality constraints (belief row sums,
+        rule weight sums) define a thin manifold that DE's stochastic
+        mutations can never hit. The ER inference pipeline accepts
+        non-normalized parameters, so DE can explore freely. After DE
+        converges, ``_normalize_flat`` projects the solution back onto
+        the exact constraint surface.
+        """
+        bounds_list = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
+
+        def objective(flat: np.ndarray) -> float:
+            normalized = self._normalize_flat(flat)
+            self.rule_base = self._unflatten_params(normalized, validate=False)
+            y_pred = self.predict_values(X)
+            return float(np.mean((y - y_pred) ** 2))
+
+        default_options: dict[str, Any] = {
+            "maxiter": 1000,
+            "tol": 1e-8,
+            "seed": 42,
+            "polish": False,
+            "disp": verbose,
+            "strategy": "best1bin",
+            "popsize": 15,
+            "mutation": (0.5, 1.0),
+            "recombination": 0.7,
+        }
+        opts = {**default_options, **(optimizer_options or {})}
+
+        x0 = self._flatten_params()
+        result = differential_evolution(
+            objective, bounds=bounds_list, x0=x0, **opts
+        )
+
+        self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
+
+    def _fit_de_slsqp(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        fix_endpoints: bool,
+        fix_endpoint_beliefs: bool,
+        normalize_rule_weights: bool,
+        optimizer_options: dict | None,
+        verbose: bool,
+    ) -> None:
+        """Two-phase training: DE for global search, SLSQP for local polish.
+
+        ``optimizer_options`` may contain ``"de"`` and ``"slsqp"`` sub-dicts
+        to configure each phase independently::
+
+            model.fit(X, y, method="DE+SLSQP", optimizer_options={
+                "de": {"maxiter": 300, "seed": 42},
+                "slsqp": {"maxiter": 1000, "ftol": 1e-12},
+            })
+
+        If no sub-dicts are present, sensible defaults are used for both.
+        """
+        opts = optimizer_options or {}
+        de_opts = opts.get("de", opts if "maxiter" in opts else {})
+        slsqp_opts = opts.get("slsqp", {})
+
+        # Phase 1: DE global search
+        if verbose:
+            print("DE+SLSQP phase 1: Differential Evolution")
+        self._fit_de(
+            X,
+            y,
+            fix_endpoints,
+            fix_endpoint_beliefs,
+            normalize_rule_weights,
+            de_opts,
+            verbose,
+        )
+
+        # Phase 2: SLSQP local polish from DE's solution
+        if verbose:
+            print("DE+SLSQP phase 2: SLSQP local polish")
+        self._fit_numpy(
+            X,
+            y,
+            fix_endpoints,
+            fix_endpoint_beliefs,
+            method="SLSQP",
+            optimizer_options=slsqp_opts or None,
+            verbose=verbose,
+            normalize_rule_weights=normalize_rule_weights,
+        )
 
     def update_from_pyomo(self, pyomo_model) -> None:
         """Extract solved parameter values from a Pyomo model and update the rule base.
