@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "desdeo-brb: A trainable Belief Rule-Based inference system"
+version: 1.0.0
+date-released: 2026-04-16
+authors:
+  - family-names: "Misitano"
+    given-names: "Giovanni"
+    email: "giovanni.a.misitano@jyu.fi"
+    affiliation: "University of Jyväskylä"
+    orcid: "https://orcid.org/0000-0002-4673-7388"
+repository-code: "https://github.com/gialmisi/desdeo-brb"
+url: "https://desdeo-brb.readthedocs.io"
+license: MIT
+keywords:
+  - belief-rule-base
+  - evidential-reasoning
+  - machine-learning
+  - explainable-ai
+  - RIMER
+references:
+  - type: article
+    authors:
+      - family-names: "Yang"
+        given-names: "Jian-Bo"
+      - family-names: "Liu"
+        given-names: "Jun"
+      - family-names: "Wang"
+        given-names: "Jin"
+      - family-names: "Sii"
+        given-names: "How-Sing"
+      - family-names: "Wang"
+        given-names: "Hong-Wei"
+    title: "Belief rule-base inference methodology using the evidential reasoning approach – RIMER"
+    journal: "IEEE Transactions on Systems, Man, and Cybernetics - Part A: Systems and Humans"
+    volume: 36
+    issue: 2
+    year: 2006
+    start: 266
+    end: 285
+    doi: "10.1109/TSMCA.2005.851270"
+  - type: article
+    authors:
+      - family-names: "Chen"
+        given-names: "Yu-Wang"
+      - family-names: "Yang"
+        given-names: "Jian-Bo"
+      - family-names: "Xu"
+        given-names: "Dong-Ling"
+      - family-names: "Zhou"
+        given-names: "Zhi-Jie"
+      - family-names: "Tang"
+        given-names: "Da-Wei"
+    title: "Inference analysis and adaptive training for belief rule based systems"
+    journal: "Expert Systems with Applications"
+    volume: 38
+    issue: 10
+    year: 2011
+    start: 12845
+    end: 12860
+    doi: "10.1016/j.eswa.2011.04.077"

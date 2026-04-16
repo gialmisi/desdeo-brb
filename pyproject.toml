@@ -1,20 +1,62 @@
 [project]
 name = "desdeo-brb"
 version = "1.0.0"
-description = "A trainable Belief Rule-Based (BRB) inference system with an sklearn-compatible API."
+description = "A trainable Belief Rule-Based (BRB) inference system with a scikit-learn-compatible API."
 readme = "README.md"
-requires-python = ">=3.10"
 license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Giovanni Misitano", email = "giovanni.a.misitano@jyu.fi" },
+]
+keywords = [
+    "belief-rule-base",
+    "evidential-reasoning",
+    "machine-learning",
+    "explainable-ai",
+    "RIMER",
+    "expert-systems",
+    "fuzzy-systems",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
 dependencies = [
-    "numpy",
-    "scipy",
-    "pydantic>=2",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
-jax = ["jax", "jaxlib"]
+jax = ["jax>=0.4", "jaxlib>=0.4"]
 pyomo = ["pyomo>=6.0"]
-all = ["jax", "jaxlib", "pyomo>=6.0"]
+notebooks = ["jupyter>=1.0", "matplotlib>=3.7"]
+all = [
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "pyomo>=6.0",
+    "jupyter>=1.0",
+    "matplotlib>=3.7",
+]
+dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.1", "mypy>=1"]
+docs = ["sphinx>=7", "furo", "myst-parser", "sphinx-autodoc-typehints"]
+
+[project.urls]
+Homepage = "https://github.com/gialmisi/desdeo-brb"
+Documentation = "https://desdeo-brb.readthedocs.io"
+Repository = "https://github.com/gialmisi/desdeo-brb"
+Issues = "https://github.com/gialmisi/desdeo-brb/issues"
+Changelog = "https://github.com/gialmisi/desdeo-brb/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = ["pytest"]
