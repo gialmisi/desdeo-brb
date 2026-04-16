@@ -33,3 +33,6 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *-checkpoint.ipynb
+
+# MkDocs build output
+site/

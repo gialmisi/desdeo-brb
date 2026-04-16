@@ -1,6 +1,7 @@
 # desdeo-brb
 
 [![Tests](https://github.com/gialmisi/desdeo-brb/actions/workflows/test.yml/badge.svg)](https://github.com/gialmisi/desdeo-brb/actions/workflows/test.yml)
+[![Documentation Status](https://readthedocs.org/projects/desdeo-brb/badge/?version=latest)](https://desdeo-brb.readthedocs.io/en/latest/)
 [![PyPI version](https://img.shields.io/pypi/v/desdeo-brb.svg)](https://pypi.org/project/desdeo-brb/)
 [![Python versions](https://img.shields.io/pypi/pyversions/desdeo-brb.svg)](https://pypi.org/project/desdeo-brb/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
