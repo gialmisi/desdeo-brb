@@ -4,14 +4,13 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from desdeo_brb.jax_backend import JAX_AVAILABLE
-
 from desdeo_brb.inference import (
     compute_activation_weights,
     compute_combined_belief_degrees,
     compute_output,
     input_transform,
 )
+from desdeo_brb.jax_backend import JAX_AVAILABLE
 from desdeo_brb.utils import build_rule_antecedent_indices, pad_referential_values
 
 pytestmark = pytest.mark.skipif(not JAX_AVAILABLE, reason="JAX not installed")
@@ -89,9 +88,7 @@ def test_activation_weights_jax_matches_numpy():
     padded_rv, rv_lengths = pad_referential_values(d["ref_values"])
 
     alphas_np = input_transform(d["X"], d["ref_values"])
-    w_np = compute_activation_weights(
-        alphas_np, d["rule_indices"], d["thetas"], d["deltas"]
-    )
+    w_np = compute_activation_weights(alphas_np, d["rule_indices"], d["thetas"], d["deltas"])
 
     alphas_jax = input_transform_jax(
         jnp.asarray(d["X"]),
@@ -116,9 +113,7 @@ def test_combined_belief_degrees_jax_matches_numpy():
     padded_rv, rv_lengths = pad_referential_values(d["ref_values"])
 
     alphas_np = input_transform(d["X"], d["ref_values"])
-    w_np = compute_activation_weights(
-        alphas_np, d["rule_indices"], d["thetas"], d["deltas"]
-    )
+    w_np = compute_activation_weights(alphas_np, d["rule_indices"], d["thetas"], d["deltas"])
     beta_np = compute_combined_belief_degrees(d["belief_degrees"], w_np)
 
     beta_jax = np.asarray(
@@ -160,9 +155,7 @@ def test_full_inference_jax_matches_numpy():
 
     # NumPy path
     alphas = input_transform(d["X"], d["ref_values"])
-    weights = compute_activation_weights(
-        alphas, d["rule_indices"], d["thetas"], d["deltas"]
-    )
+    weights = compute_activation_weights(alphas, d["rule_indices"], d["thetas"], d["deltas"])
     combined = compute_combined_belief_degrees(d["belief_degrees"], weights)
     output_np = compute_output(combined, d["consequent_rv"])
 

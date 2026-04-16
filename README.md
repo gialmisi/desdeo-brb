@@ -1,5 +1,11 @@
 # desdeo-brb
 
+[![Tests](https://github.com/gialmisi/desdeo-brb/actions/workflows/test.yml/badge.svg)](https://github.com/gialmisi/desdeo-brb/actions/workflows/test.yml)
+[![PyPI version](https://img.shields.io/pypi/v/desdeo-brb.svg)](https://pypi.org/project/desdeo-brb/)
+[![Python versions](https://img.shields.io/pypi/pyversions/desdeo-brb.svg)](https://pypi.org/project/desdeo-brb/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![codecov](https://codecov.io/gh/gialmisi/desdeo-brb/branch/main/graph/badge.svg)](https://codecov.io/gh/gialmisi/desdeo-brb)
+
 A trainable Belief Rule-Based (BRB) inference system with an sklearn-compatible API.
 
 > **Note:** `desdeo` is part of the package name for historical reasons. This

@@ -114,9 +114,7 @@ def test_pyomo_solves_trivial():
 
     assert str(result.solver.termination_condition) == "optimal"
     final_mse = float(pyo.value(m.obj))
-    assert final_mse <= initial_mse + 1e-9, (
-        f"MSE did not improve: {initial_mse} -> {final_mse}"
-    )
+    assert final_mse <= initial_mse + 1e-9, f"MSE did not improve: {initial_mse} -> {final_mse}"
     assert final_mse < 0.01, f"Final MSE too high: {final_mse}"
 
 
@@ -203,9 +201,7 @@ def test_fit_ipopt_multistart():
     X_train = np.linspace(0, 3, 100).reshape(-1, 1)
     y_train = f(X_train[:, 0])
 
-    model.fit(
-        X_train, y_train, fix_endpoints=True, method="ipopt", n_restarts=3
-    )
+    model.fit(X_train, y_train, fix_endpoints=True, method="ipopt", n_restarts=3)
 
     y_pred = model.predict_values(X_train)
     mse = float(np.mean((y_train - y_pred) ** 2))

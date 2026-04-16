@@ -15,7 +15,6 @@ from desdeo_brb.brb import BRBModel
 from desdeo_brb.models import RuleBase
 from desdeo_brb.utils import build_rule_antecedent_indices
 
-
 # Fixtures: Pipeline leak detection (Chen et al. 2011, Table D.1)
 
 # Trained referential values from Chen et al. 2011 Section 5.2.3
@@ -172,12 +171,8 @@ def test_pipeline_physical_consistency():
     y_mid = model.predict_values(X_mid)[0]
 
     # Physical consistency: large leak > intermediate > normal
-    assert y_leak > y_mid, (
-        f"Large leak ({y_leak:.2f}) should exceed intermediate ({y_mid:.2f})"
-    )
-    assert y_mid > y_normal, (
-        f"Intermediate ({y_mid:.2f}) should exceed normal ({y_normal:.2f})"
-    )
+    assert y_leak > y_mid, f"Large leak ({y_leak:.2f}) should exceed intermediate ({y_mid:.2f})"
+    assert y_mid > y_normal, f"Intermediate ({y_mid:.2f}) should exceed normal ({y_normal:.2f})"
 
     # Normal operation should be near zero
     assert y_normal < 2.0, f"Normal operation leak size too high: {y_normal:.2f}"

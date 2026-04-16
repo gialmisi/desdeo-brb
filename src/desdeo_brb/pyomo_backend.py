@@ -65,7 +65,7 @@ def _smooth_max_n(values: list, eps: float = 1e-4):
 
 
 def build_pyomo_brb_model(
-    brb_model: "BRBModel",
+    brb_model: BRBModel,
     X_train: np.ndarray,
     y_train: np.ndarray,
     fix_endpoints: bool = True,
@@ -143,9 +143,7 @@ def build_pyomo_brb_model(
     m.delta = pyo.Var(m.RULES, m.ATTRIBUTES, bounds=(1e-6, 10.0), initialize=_aw_init)
 
     # Referential values: indexed by (attribute_idx, ref_value_idx)
-    rv_indices = [
-        (i, j) for i in range(n_attributes) for j in range(ref_value_lengths[i])
-    ]
+    rv_indices = [(i, j) for i in range(n_attributes) for j in range(ref_value_lengths[i])]
 
     def _rv_init(_m, i, j):
         return float(rb.precedent_referential_values[i][j])
@@ -209,9 +207,7 @@ def build_pyomo_brb_model(
 
     if not optimize_referential_values:
         # Path A: compute alphas with NumPy and store as Python floats.
-        rvs_list = [
-            np.asarray(rb.precedent_referential_values[i]) for i in range(n_attributes)
-        ]
+        rvs_list = [np.asarray(rb.precedent_referential_values[i]) for i in range(n_attributes)]
         alphas_np = input_transform(X_train, rvs_list)
         for s in range(n_samples):
             for i in range(n_attributes):
@@ -263,8 +259,7 @@ def build_pyomo_brb_model(
         for k in range(n_rules):
             # Gather alphas for this rule's antecedents
             alphas_for_rule = [
-                alpha[(s, i, int(rule_antecedent_indices[k, i]))]
-                for i in range(n_attributes)
+                alpha[(s, i, int(rule_antecedent_indices[k, i]))] for i in range(n_attributes)
             ]
 
             if not optimize_referential_values:
@@ -317,8 +312,7 @@ def build_pyomo_brb_model(
         prod_terms_per_n = []
         for n in range(n_consequents):
             terms = [
-                w[(s, k)] * m.beta[k, n] + 1.0 - w[(s, k)] * beta_sum[k]
-                for k in range(n_rules)
+                w[(s, k)] * m.beta[k, n] + 1.0 - w[(s, k)] * beta_sum[k] for k in range(n_rules)
             ]
             prod_terms_per_n.append(reduce(operator.mul, terms))
 

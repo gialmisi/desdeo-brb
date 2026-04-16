@@ -13,7 +13,6 @@ from numpy.testing import assert_allclose
 from desdeo_brb.brb import BRBModel
 from desdeo_brb.utils import build_rule_antecedent_indices
 
-
 # Helper functions
 
 

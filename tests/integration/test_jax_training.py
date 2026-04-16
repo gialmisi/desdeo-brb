@@ -6,9 +6,8 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from desdeo_brb.jax_backend import JAX_AVAILABLE
-
 from desdeo_brb.brb import BRBModel
+from desdeo_brb.jax_backend import JAX_AVAILABLE
 from desdeo_brb.utils import generate_uniform_referential_values
 
 pytestmark = pytest.mark.skipif(not JAX_AVAILABLE, reason="JAX not installed")
@@ -55,26 +54,20 @@ def test_jax_fit_not_catastrophically_slower():
     y_train = 2 * X_train.ravel() + 1
 
     # NumPy timing
-    model_np = BRBModel(
-        prv, crv, initial_rule_fn=lambda x: 2 * x[0] + 1, backend="numpy"
-    )
+    model_np = BRBModel(prv, crv, initial_rule_fn=lambda x: 2 * x[0] + 1, backend="numpy")
     t0 = time.perf_counter()
     model_np.fit(X_train, y_train, fix_endpoints=True)
     np_time = time.perf_counter() - t0
 
     # JAX timing (includes JIT compilation)
-    model_jax = BRBModel(
-        prv, crv, initial_rule_fn=lambda x: 2 * x[0] + 1, backend="jax"
-    )
+    model_jax = BRBModel(prv, crv, initial_rule_fn=lambda x: 2 * x[0] + 1, backend="jax")
     t0 = time.perf_counter()
     model_jax.fit(X_train, y_train, fix_endpoints=True)
     jax_time = time.perf_counter() - t0
 
     # JAX may be slower on small problems due to JIT overhead.
     # Just check it's not absurdly slower (< 20x).
-    assert jax_time < np_time * 20, (
-        f"JAX too slow: {jax_time:.2f}s vs NumPy {np_time:.2f}s"
-    )
+    assert jax_time < np_time * 20, f"JAX too slow: {jax_time:.2f}s vs NumPy {np_time:.2f}s"
 
 
 @pytest.mark.slow
@@ -132,8 +125,7 @@ def test_jax_faster_on_large_problem():
     )
     # Print for visibility when run with -s
     print(
-        f"\n  NumPy/SLSQP: {np_time:.2f}s | JAX/L-BFGS-B: {jax_time:.2f}s | "
-        f"Speedup: {speedup:.1f}x"
+        f"\n  NumPy/SLSQP: {np_time:.2f}s | JAX/L-BFGS-B: {jax_time:.2f}s | Speedup: {speedup:.1f}x"
     )
 
 
@@ -146,9 +138,7 @@ def test_jax_predict_matches_numpy_predict():
     y_train = 2 * X_train.ravel() + 1
 
     # Train with JAX
-    model_jax = BRBModel(
-        prv, crv, initial_rule_fn=lambda x: 2 * x[0] + 1, backend="jax"
-    )
+    model_jax = BRBModel(prv, crv, initial_rule_fn=lambda x: 2 * x[0] + 1, backend="jax")
     model_jax.fit(X_train, y_train, fix_endpoints=True)
 
     # Create NumPy model with the same trained rule base

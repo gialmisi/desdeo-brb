@@ -63,9 +63,7 @@ def pad_referential_values(
     return padded, lengths
 
 
-def unpad_referential_values(
-    padded: np.ndarray, lengths: np.ndarray
-) -> list[np.ndarray]:
+def unpad_referential_values(padded: np.ndarray, lengths: np.ndarray) -> list[np.ndarray]:
     """Inverse of :func:`pad_referential_values`.
 
     Args:

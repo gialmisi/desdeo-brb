@@ -4,7 +4,8 @@ Provides the ``BRBModel`` class which supports fitting, predicting, and
 inspecting a Belief Rule-Based inference system.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from scipy.optimize import LinearConstraint, differential_evolution, minimize
@@ -59,9 +60,7 @@ class BRBModel:
         self._precedent_referential_values = [
             np.asarray(rv, dtype=float) for rv in precedent_referential_values
         ]
-        self._consequent_referential_values = np.asarray(
-            consequent_referential_values, dtype=float
-        )
+        self._consequent_referential_values = np.asarray(consequent_referential_values, dtype=float)
         self._utility_fn = utility_fn
         self._ref_value_lengths = [len(rv) for rv in self._precedent_referential_values]
 
@@ -74,9 +73,7 @@ class BRBModel:
         self, initial_rule_fn: Callable[[np.ndarray], float] | None = None
     ) -> RuleBase:
         """Construct a default RuleBase from the referential values."""
-        rule_antecedent_indices = build_rule_antecedent_indices(
-            self._precedent_referential_values
-        )
+        rule_antecedent_indices = build_rule_antecedent_indices(self._precedent_referential_values)
         n_rules = len(rule_antecedent_indices)
         n_consequents = len(self._consequent_referential_values)
         n_attributes = len(self._precedent_referential_values)
@@ -85,9 +82,7 @@ class BRBModel:
         attribute_weights = np.ones((n_rules, n_attributes))
 
         if initial_rule_fn is not None:
-            belief_degrees = self._beliefs_from_fn(
-                initial_rule_fn, rule_antecedent_indices
-            )
+            belief_degrees = self._beliefs_from_fn(initial_rule_fn, rule_antecedent_indices)
         else:
             belief_degrees = np.full((n_rules, n_consequents), 1.0 / n_consequents)
 
@@ -157,9 +152,7 @@ class BRBModel:
             alphas, rb.rule_antecedent_indices, rb.rule_weights, rb.attribute_weights
         )
         combined = compute_combined_belief_degrees(rb.belief_degrees, weights)
-        output = compute_output(
-            combined, rb.consequent_referential_values, self._utility_fn
-        )
+        output = compute_output(combined, rb.consequent_referential_values, self._utility_fn)
 
         return InferenceResult(
             input_belief_distributions=alphas,
@@ -171,14 +164,14 @@ class BRBModel:
 
     def _predict_jax(self, X: np.ndarray) -> InferenceResult:
         """JAX inference path. Converts results back to NumPy for the public API."""
+        import jax.numpy as jnp
+
         from desdeo_brb.jax_backend import (
             compute_activation_weights_jax,
             compute_combined_belief_degrees_jax,
             compute_output_jax,
             input_transform_jax,
         )
-
-        import jax.numpy as jnp
 
         rb = self.rule_base
         padded_rv, rv_lengths = pad_referential_values(rb.precedent_referential_values)
@@ -194,17 +187,12 @@ class BRBModel:
             jnp.asarray(rb.rule_weights),
             jnp.asarray(rb.attribute_weights),
         )
-        combined = compute_combined_belief_degrees_jax(
-            jnp.asarray(rb.belief_degrees), weights
-        )
-        output = compute_output_jax(
-            combined, jnp.asarray(rb.consequent_referential_values)
-        )
+        combined = compute_combined_belief_degrees_jax(jnp.asarray(rb.belief_degrees), weights)
+        output = compute_output_jax(combined, jnp.asarray(rb.consequent_referential_values))
 
         # Convert back to numpy; split padded alphas into list
         alphas_list = [
-            np.asarray(alphas_3d[:, i, : int(rv_lengths[i])])
-            for i in range(len(rv_lengths))
+            np.asarray(alphas_3d[:, i, : int(rv_lengths[i])]) for i in range(len(rv_lengths))
         ]
 
         return InferenceResult(
@@ -320,9 +308,7 @@ class BRBModel:
                 method = "SLSQP"
             valid_numpy = ("SLSQP", "trust-constr", "ipopt", "DE", "DE+SLSQP")
             if method not in valid_numpy:
-                raise ValueError(
-                    f"NumPy backend supports methods {valid_numpy}, got {method!r}"
-                )
+                raise ValueError(f"NumPy backend supports methods {valid_numpy}, got {method!r}")
             if method == "ipopt":
                 try:
                     from desdeo_brb.pyomo_backend import PYOMO_AVAILABLE
@@ -336,9 +322,7 @@ class BRBModel:
             if method is None:
                 method = "L-BFGS-B"
             if method != "L-BFGS-B":
-                raise ValueError(
-                    f"JAX backend supports method='L-BFGS-B' only, got {method!r}"
-                )
+                raise ValueError(f"JAX backend supports method='L-BFGS-B' only, got {method!r}")
 
         if n_restarts < 1:
             raise ValueError(f"n_restarts must be >= 1, got {n_restarts}")
@@ -461,9 +445,7 @@ class BRBModel:
         bounds = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
 
         if method == "SLSQP":
-            constraints = self._build_constraints(
-                fix_endpoint_beliefs, normalize_rule_weights
-            )
+            constraints = self._build_constraints(fix_endpoint_beliefs, normalize_rule_weights)
             default_options = {
                 "maxiter": 1000,
                 "ftol": 1e-9,
@@ -625,9 +607,7 @@ class BRBModel:
         else:
             rw_sigmoid = sp_sigmoid(rw_raw)
             rw_sum = rw_sigmoid.sum()
-            rule_weights = (
-                rw_sigmoid / rw_sum if rw_sum > 0 else np.full(n_rules, 1.0 / n_rules)
-            )
+            rule_weights = rw_sigmoid / rw_sum if rw_sum > 0 else np.full(n_rules, 1.0 / n_rules)
         idx += n_rules
 
         aw_size = n_rules * n_attributes
@@ -904,9 +884,7 @@ class BRBModel:
         belief_degrees = belief_degrees / row_sums
 
         # Extract rule weights and renormalize
-        rule_weights = np.array(
-            [float(pyo.value(pyomo_model.theta[k])) for k in range(n_rules)]
-        )
+        rule_weights = np.array([float(pyo.value(pyomo_model.theta[k])) for k in range(n_rules)])
         rule_weights = np.clip(rule_weights, 0.0, 1.0)
         rw_sum = rule_weights.sum()
         if rw_sum > 0:
@@ -925,9 +903,7 @@ class BRBModel:
         precedent_referential_values: list[np.ndarray] = []
         for i in range(n_attributes):
             length = int(ref_value_lengths[i])
-            rv = np.array(
-                [float(pyo.value(pyomo_model.A[i, j])) for j in range(length)]
-            )
+            rv = np.array([float(pyo.value(pyomo_model.A[i, j])) for j in range(length)])
             rv = np.sort(rv)
             precedent_referential_values.append(rv)
 
@@ -1073,9 +1049,7 @@ class BRBModel:
         bounds = self._build_bounds(fix_endpoints, fix_endpoint_beliefs)
 
         if method == "SLSQP":
-            all_constraints = self._build_constraints(
-                fix_endpoint_beliefs, normalize_rule_weights
-            )
+            all_constraints = self._build_constraints(fix_endpoint_beliefs, normalize_rule_weights)
             default_options = {
                 "maxiter": 1000,
                 "ftol": 1e-9,
@@ -1144,12 +1118,9 @@ class BRBModel:
         """
         if "precedent_referential_values" in params:
             self._precedent_referential_values = [
-                np.asarray(rv, dtype=float)
-                for rv in params["precedent_referential_values"]
+                np.asarray(rv, dtype=float) for rv in params["precedent_referential_values"]
             ]
-            self._ref_value_lengths = [
-                len(rv) for rv in self._precedent_referential_values
-            ]
+            self._ref_value_lengths = [len(rv) for rv in self._precedent_referential_values]
         if "consequent_referential_values" in params:
             self._consequent_referential_values = np.asarray(
                 params["consequent_referential_values"], dtype=float
@@ -1214,9 +1185,7 @@ class BRBModel:
             parts.append(rv)
         return np.concatenate(parts)
 
-    def _flatten_params_unconstrained(
-        self, normalize_rule_weights: bool = True
-    ) -> np.ndarray:
+    def _flatten_params_unconstrained(self, normalize_rule_weights: bool = True) -> np.ndarray:
         """Flatten parameters into unconstrained space for JAX optimization.
 
         Applies inverse softmax (log) to belief degrees, inverse softmax or
@@ -1507,7 +1476,7 @@ class BRBModel:
         bounds.extend([(0.0, 10.0)] * (n_rules * n_attributes))
 
         # precedent referential values
-        for i, rv in enumerate(rb.precedent_referential_values):
+        for rv in rb.precedent_referential_values:
             for j in range(len(rv)):
                 if fix_endpoints and (j == 0 or j == len(rv) - 1):
                     # Fix endpoint: bound to current value
@@ -1533,7 +1502,7 @@ class BRBModel:
         skip_bd_rules: set[int] = set()
         if fix_endpoint_beliefs:
             boundary = self._boundary_rule_mask()
-            skip_bd_rules = set(int(i) for i in np.where(boundary)[0])
+            skip_bd_rules = {int(i) for i in np.where(boundary)[0]}
 
         constraints: list[dict] = []
 
@@ -1545,9 +1514,7 @@ class BRBModel:
             row_start = bd_offset + k * n_consequents
             row_end = row_start + n_consequents
 
-            def bd_constraint(
-                flat: np.ndarray, s: int = row_start, e: int = row_end
-            ) -> float:
+            def bd_constraint(flat: np.ndarray, s: int = row_start, e: int = row_end) -> float:
                 return float(flat[s:e].sum() - 1.0)
 
             constraints.append({"type": "eq", "fun": bd_constraint})
@@ -1565,12 +1532,10 @@ class BRBModel:
         # Referential values ordering: rv[j] <= rv[j+1] for each attribute
         rv_offset = n_rules * n_consequents + n_rules + n_rules * n_attributes
         pos = rv_offset
-        for i, length in enumerate(self._ref_value_lengths):
+        for length in self._ref_value_lengths:
             for j in range(length - 1):
 
-                def rv_order(
-                    flat: np.ndarray, p: int = pos + j, p1: int = pos + j + 1
-                ) -> float:
+                def rv_order(flat: np.ndarray, p: int = pos + j, p1: int = pos + j + 1) -> float:
                     return float(flat[p1] - flat[p])
 
                 constraints.append({"type": "ineq", "fun": rv_order})
@@ -1639,9 +1604,7 @@ class BRBModel:
 
         return constraints
 
-    def _mse_objective(
-        self, flat_params: np.ndarray, X: np.ndarray, y: np.ndarray
-    ) -> float:
+    def _mse_objective(self, flat_params: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
         """Compute MSE for a given flat parameter vector.
 
         Skips validation during optimization for speed; the final result

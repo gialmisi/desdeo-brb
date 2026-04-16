@@ -83,9 +83,7 @@ def input_transform_jax(
         rows = jnp.arange(n_samples)
         alpha = alpha.at[rows, j].set(alpha_lower)
         j1_clamped = jnp.minimum(j + 1, max_rv - 1)
-        alpha = alpha.at[rows, j1_clamped].set(
-            jnp.where(j + 1 < length, alpha_upper, 0.0)
-        )
+        alpha = alpha.at[rows, j1_clamped].set(jnp.where(j + 1 < length, alpha_upper, 0.0))
 
         alpha = alpha * valid[jnp.newaxis, :]
         return alpha

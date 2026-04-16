@@ -137,9 +137,7 @@ def test_fit_custom_infringer_style():
 
     val_nadir = model.predict_values(nadir)[0]
     val_ideal = model.predict_values(ideal)[0]
-    assert val_ideal > val_nadir, (
-        f"Ideal ({val_ideal:.3f}) should exceed nadir ({val_nadir:.3f})"
-    )
+    assert val_ideal > val_nadir, f"Ideal ({val_ideal:.3f}) should exceed nadir ({val_nadir:.3f})"
 
 
 def test_fit_custom_with_optimizer_options():
@@ -256,9 +254,7 @@ def test_fix_endpoint_beliefs_allows_training():
     mse_after = float(np.mean((y_true - y_trained) ** 2))
 
     # Training must have actually improved the model
-    assert mse_after < mse_before, (
-        f"MSE did not improve: {mse_before:.4f} -> {mse_after:.4f}"
-    )
+    assert mse_after < mse_before, f"MSE did not improve: {mse_before:.4f} -> {mse_after:.4f}"
     assert mse_after < 0.2, f"Trained MSE too high: {mse_after:.4f}"
 
     # Endpoint beliefs should be preserved
@@ -339,9 +335,7 @@ def test_fit_without_rule_weight_normalization():
 
     X_train = np.linspace(0, 3, 200).reshape(-1, 1)
     y_train = f(X_train[:, 0])
-    model.fit(
-        X_train, y_train, fix_endpoints=True, normalize_rule_weights=False
-    )
+    model.fit(X_train, y_train, fix_endpoints=True, normalize_rule_weights=False)
 
     X_eval = np.linspace(0, 3, 500).reshape(-1, 1)
     y_pred = model.predict_values(X_eval)

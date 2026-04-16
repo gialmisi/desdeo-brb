@@ -15,20 +15,28 @@ def _make_valid_rule_base() -> RuleBase:
     return RuleBase(
         precedent_referential_values=[np.array([0.0, 1.0]), np.array([0.0, 0.5, 1.0])],
         consequent_referential_values=np.array([0.0, 1.0]),
-        belief_degrees=np.array([
-            [0.5, 0.5],
-            [0.3, 0.7],
-            [0.8, 0.2],
-            [0.4, 0.6],
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ]),
+        belief_degrees=np.array(
+            [
+                [0.5, 0.5],
+                [0.3, 0.7],
+                [0.8, 0.2],
+                [0.4, 0.6],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ]
+        ),
         rule_weights=np.full(6, 1.0 / 6),
         attribute_weights=np.ones((6, 2)),
-        rule_antecedent_indices=np.array([
-            [0, 0], [0, 1], [0, 2],
-            [1, 0], [1, 1], [1, 2],
-        ]),
+        rule_antecedent_indices=np.array(
+            [
+                [0, 0],
+                [0, 1],
+                [0, 2],
+                [1, 0],
+                [1, 1],
+                [1, 2],
+            ]
+        ),
     )
 
 

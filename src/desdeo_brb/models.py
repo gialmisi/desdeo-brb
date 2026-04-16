@@ -39,12 +39,9 @@ class RuleBase(BaseModel):
 
         for i, rv in enumerate(self.precedent_referential_values):
             if len(rv) > 1 and not np.all(rv[:-1] <= rv[1:]):
-                raise ValueError(
-                    f"precedent_referential_values[{i}] must be sorted ascending"
-                )
+                raise ValueError(f"precedent_referential_values[{i}] must be sorted ascending")
         if len(self.consequent_referential_values) > 1 and not np.all(
-            self.consequent_referential_values[:-1]
-            <= self.consequent_referential_values[1:]
+            self.consequent_referential_values[:-1] <= self.consequent_referential_values[1:]
         ):
             raise ValueError("consequent_referential_values must be sorted ascending")
 
@@ -66,14 +63,10 @@ class RuleBase(BaseModel):
 
         row_sums = self.belief_degrees.sum(axis=1)
         if not np.allclose(row_sums, 1.0, atol=1e-6):
-            raise ValueError(
-                f"Each row of belief_degrees must sum to 1 (got row sums: {row_sums})"
-            )
+            raise ValueError(f"Each row of belief_degrees must sum to 1 (got row sums: {row_sums})")
 
         if not np.allclose(self.rule_weights.sum(), 1.0, atol=1e-6):
-            raise ValueError(
-                f"rule_weights must sum to 1 (got {self.rule_weights.sum()})"
-            )
+            raise ValueError(f"rule_weights must sum to 1 (got {self.rule_weights.sum()})")
 
         if np.any(self.attribute_weights < 0):
             raise ValueError("attribute_weights must be non-negative")
@@ -231,9 +224,7 @@ class InferenceResult(BaseModel):
                 )
 
                 if attribute_names is None:
-                    attr_names = [
-                        f"x{i + 1}" for i in range(rule_base.n_attributes)
-                    ]
+                    attr_names = [f"x{i + 1}" for i in range(rule_base.n_attributes)]
                 else:
                     attr_names = attribute_names
                 ante_parts = []
@@ -242,10 +233,7 @@ class InferenceResult(BaseModel):
                     val = float(rule_base.precedent_referential_values[i][idx])
                     ante_parts.append(f"{attr_names[i]}={val:.4g}")
                 ante_str = ", ".join(ante_parts)
-                lines.append(
-                    f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): "
-                    f"{{{belief_str}}}"
-                )
+                lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {{{belief_str}}}")
             else:
                 lines.append(f"  Rule {int(k_idx)} (w={wk:.4f})")
 
@@ -269,9 +257,7 @@ class InferenceResult(BaseModel):
         Numpy arrays are converted to nested Python lists.
         """
         return {
-            "input_belief_distributions": [
-                a.tolist() for a in self.input_belief_distributions
-            ],
+            "input_belief_distributions": [a.tolist() for a in self.input_belief_distributions],
             "activation_weights": self.activation_weights.tolist(),
             "combined_belief_degrees": self.combined_belief_degrees.tolist(),
             "consequent_values": self.consequent_values.tolist(),

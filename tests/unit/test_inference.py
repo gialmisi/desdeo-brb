@@ -10,7 +10,6 @@ from desdeo_brb.inference import (
     input_transform,
 )
 
-
 # input_transform tests
 
 

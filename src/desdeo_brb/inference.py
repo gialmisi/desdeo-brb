@@ -5,14 +5,12 @@ input transformation, activation weight computation, belief combination, and
 output aggregation. All functions are vectorized over samples.
 """
 
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 
 
-def input_transform(
-    X: np.ndarray, referential_values: list[np.ndarray]
-) -> list[np.ndarray]:
+def input_transform(X: np.ndarray, referential_values: list[np.ndarray]) -> list[np.ndarray]:
     """Transform raw inputs into belief distributions over referential values.
 
     Implements Eq. A-1 from Chen et al. (2011). For each attribute, computes
@@ -110,9 +108,7 @@ def compute_activation_weights(
     delta_max = deltas.max(axis=1, keepdims=True)  # (n_rules, 1)
     # Avoid division by zero for rules with all-zero weights
     safe_delta_max = np.where(delta_max > 0, delta_max, 1.0)
-    delta_bar = np.where(
-        delta_max > 0, deltas / safe_delta_max, 0.0
-    )  # (n_rules, n_attributes)
+    delta_bar = np.where(delta_max > 0, deltas / safe_delta_max, 0.0)  # (n_rules, n_attributes)
 
     # Gather the matching degree for each rule's antecedent per attribute
     # alpha_selected[i] has shape (n_samples, n_rules): for attribute i,
@@ -138,18 +134,14 @@ def compute_activation_weights(
         safe_a = np.where(a > 0, a, 1.0)
         log_product += db * np.log(safe_a)
 
-    unnorm = thetas * np.where(
-        any_zero, 0.0, np.exp(log_product)
-    )  # (n_samples, n_rules)
+    unnorm = thetas * np.where(any_zero, 0.0, np.exp(log_product))  # (n_samples, n_rules)
 
     # Normalize across rules per sample
     denom = unnorm.sum(axis=1, keepdims=True) + 1e-12
     return unnorm / denom
 
 
-def compute_combined_belief_degrees(
-    bre_matrix: np.ndarray, weights: np.ndarray
-) -> np.ndarray:
+def compute_combined_belief_degrees(bre_matrix: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """Combine activated belief degrees using the analytical evidential reasoning algorithm.
 
     Implements Eq. A-15 from Chen et al. (2011) / Eq. 3.20 from the thesis.
@@ -240,9 +232,7 @@ def compute_combined_belief_degrees(
     numerator = prod_c - prod_r[:, np.newaxis]  # (n_samples, n_consequents)
 
     # Denominator: sum_j prod_k(c_{j,k}) - (N-1)*prod_k(r_k) - prod_k(q_k)
-    denominator = (
-        prod_c.sum(axis=1) - (n_consequents - 1) * prod_r - prod_q
-    )  # (n_samples,)
+    denominator = prod_c.sum(axis=1) - (n_consequents - 1) * prod_r - prod_q  # (n_samples,)
 
     beta = numerator / (denominator[:, np.newaxis] + 1e-12)
 
