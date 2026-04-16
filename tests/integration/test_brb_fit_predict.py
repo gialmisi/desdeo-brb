@@ -375,9 +375,7 @@ def test_fit_multistart_improves():
 
     # Untrained baseline
     model_untrained = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
-    mse_untrained = float(
-        np.mean((y_true - model_untrained.predict_values(X_eval)) ** 2)
-    )
+    mse_untrained = float(np.mean((y_true - model_untrained.predict_values(X_eval)) ** 2))
 
     # Single start
     model_single = BRBModel(prv, crv, initial_rule_fn=lambda x: f(x[0]))
