@@ -56,7 +56,7 @@ Homepage = "https://github.com/gialmisi/desdeo-brb"
 Documentation = "https://desdeo-brb.readthedocs.io"
 Repository = "https://github.com/gialmisi/desdeo-brb"
 Issues = "https://github.com/gialmisi/desdeo-brb/issues"
-Changelog = "https://github.com/gialmisi/desdeo-brb/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/gialmisi/desdeo-brb/blob/master/CHANGELOG.md"
 
 [dependency-groups]
 dev = ["pytest"]

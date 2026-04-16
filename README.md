@@ -4,7 +4,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/desdeo-brb.svg)](https://pypi.org/project/desdeo-brb/)
 [![Python versions](https://img.shields.io/pypi/pyversions/desdeo-brb.svg)](https://pypi.org/project/desdeo-brb/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![codecov](https://codecov.io/gh/gialmisi/desdeo-brb/branch/main/graph/badge.svg)](https://codecov.io/gh/gialmisi/desdeo-brb)
+[![codecov](https://codecov.io/gh/gialmisi/desdeo-brb/branch/master/graph/badge.svg)](https://codecov.io/gh/gialmisi/desdeo-brb)
 
 A trainable Belief Rule-Based (BRB) inference system with an sklearn-compatible API.
 
