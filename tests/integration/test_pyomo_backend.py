@@ -259,6 +259,42 @@ def test_update_from_pyomo():
     assert mse < 0.1
 
 
+def test_fit_ipopt_handles_error_gracefully():
+    """IPOPT error should not crash; should use best solution found or warn."""
+
+    def f(x):
+        return (x[0] ** 2 + x[1] - 11) ** 2 + (x[0] + x[1] ** 2 - 7) ** 2
+
+    rv_1d = np.array([-6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0])
+    prv = [rv_1d, rv_1d]
+    crv = np.array([0.0, 200.0, 500.0, 1000.0, 2200.0])
+    model = BRBModel(prv, crv, initial_rule_fn=f)
+
+    # Small grid to keep the test fast
+    x = np.linspace(-6, 6, 5)
+    X1, X2 = np.meshgrid(x, x, indexing="ij")
+    X_train = np.column_stack([X1.ravel(), X2.ravel()])
+    y_train = np.array([f(r) for r in X_train])
+
+    y_before = model.predict_values(X_train)
+    mse_before = float(np.mean((y_train - y_before) ** 2))
+
+    # Should NOT raise even if IPOPT hits numerical issues
+    model.fit(
+        X_train,
+        y_train,
+        fix_endpoints=True,
+        method="ipopt",
+        optimizer_options={"max_iter": 50},
+    )
+
+    y_after = model.predict_values(X_train)
+    mse_after = float(np.mean((y_train - y_after) ** 2))
+
+    # Either improved or at worst unchanged (no crash)
+    assert mse_after <= mse_before + 1.0
+
+
 def test_pyomo_multi_attribute_builds():
     """Pyomo model builds and solves for a 2-attribute BRB (f(x1,x2)=x1+x2)."""
     prv = [np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])]

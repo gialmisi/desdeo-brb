@@ -27,36 +27,19 @@ integrate into existing ML workflows and pipelines.
 
 ## Installation
 
-`desdeo-brb` is available on PyPI and installable via, e.g., `pip`:
-
 ```bash
-pip install desdeo-brb
+pip install desdeo-brb          # Core (NumPy + SciPy)
+pip install desdeo-brb[jax]     # + JAX backend
+pip install desdeo-brb[pyomo]   # + Pyomo/IPOPT backend
+pip install desdeo-brb[all]     # Everything
 ```
 
-For JAX support (JIT compilation + autodiff training):
+The IPOPT backend requires IPOPT binaries installed separately:
 
 ```bash
-pip install desdeo-brb[jax]
+apt install coinor-libipopt-dev   # Debian/Ubuntu
+conda install -c conda-forge ipopt  # conda
 ```
-
-### IPOPT solver (optional, for interior-point training)
-
-```bash
-pip install desdeo-brb[pyomo]
-```
-
-IPOPT binaries must be installed separately, e.g.:
-
-```bash
-apt install coinor-libipopt-dev
-# or
-conda install -c conda-forge ipopt
-```
-
-Once installed you can train with `model.fit(X, y, method="ipopt")`. The
-IPOPT backend often finds different (sometimes better) local minima than
-the default scipy optimizers, especially for models with many rules.
-Combine with `n_restarts > 1` for the best results.
 
 ## Quick start
 
@@ -79,8 +62,8 @@ rng = np.random.default_rng(42)
 X_train = rng.uniform(0, 3, size=(1000, 1))
 y_train = X_train[:, 0] * np.sin(X_train[:, 0] ** 2)
 
-# Train
-model.fit(X_train, y_train)
+# Train (multiple restarts for reliable results)
+model.fit(X_train, y_train, n_restarts=5)
 
 # Predict
 X_test = np.linspace(0, 3, 100).reshape(-1, 1)
@@ -122,35 +105,30 @@ See source docstrings for full details.
 
 ## Key concepts
 
-**Referential values** are the discrete anchor points that define the input and
-*output spaces. Each input attribute has its own set of referential values
-*(which may differ in number — the library supports varying-length arrays), and
-*the output has a separate set of consequent referential values. The Cartesian
-*product of all input referential values defines the set of rules.
+**Referential values** are the discrete anchor points that define the input and output spaces. Each input attribute has its own set of referential values (which may differ in number), and the output has a separate set of consequent referential values. The Cartesian product of all input referential values defines the set of rules.
 
-**Belief degrees** express each rule's consequent as a probability distribution
-*over the consequent referential values. For example, a rule might say "if
-*temperature is High, then risk is {Low: 0.1, Medium: 0.7, High: 0.2}." Each row
-*of the belief degree matrix sums to 1.
+**Belief degrees** express each rule's consequent as a probability distribution over the consequent referential values. For example, a rule might say "if temperature is High, then risk is {Low: 0.1, Medium: 0.7, High: 0.2}." Each row of the belief degree matrix sums to 1.
 
-**Activation weights** measure how strongly each rule matches a given input.
-*When the input falls exactly on a rule's antecedent referential values, that
-*rule gets full activation. Between referential values, adjacent rules share
-*activation proportionally.
+**Activation weights** measure how strongly each rule matches a given input. When the input falls exactly on a rule's antecedent referential values, that rule gets full activation. Between referential values, adjacent rules share activation proportionally.
 
-**Combined belief degrees** are computed by the evidential reasoning algorithm,
-*which analytically aggregates the activated rules' belief distributions into a
-*single output distribution. The scalar output is then computed as a weighted
-*average of the consequent values using this distribution.
+**Combined belief degrees** are computed by the evidential reasoning algorithm, which analytically aggregates the activated rules' belief distributions into a single output distribution. The scalar output is then computed as a weighted average of the consequent values using this distribution.
 
-**Training** optimizes belief degrees, rule weights, attribute weights, and
-*optionally the referential value positions themselves. All parameters are
-*subject to constraints: belief rows sum to 1, rule weights sum to 1, attribute
-*weights are non-negative, and referential values remain sorted. The NumPy
-*backend uses SLSQP with explicit constraints; the JAX backend uses L-BFGS-B
-*with a differentiable reparameterization (softmax/softplus).
+**Training** optimizes belief degrees, rule weights, attribute weights, and optionally the referential value positions themselves. All parameters are subject to constraints: belief rows sum to 1, rule weights sum to 1, attribute weights are non-negative, and referential values remain sorted.
 
 See the notebooks for worked examples with mathematical context.
+
+## Training methods
+
+| Method | Type | Best for | Requires |
+|--------|------|----------|----------|
+| `SLSQP` (default) | Local, constrained | Small models with `n_restarts` | NumPy, SciPy |
+| `trust-constr` | Local, constrained | Alternative to SLSQP | NumPy, SciPy |
+| `DE` | Global, evolutionary | Large models, complex landscapes | NumPy, SciPy |
+| `DE+SLSQP` | Global + local polish | Reliable single-run training | NumPy, SciPy |
+| `ipopt` | Local, interior-point | Custom Pyomo objectives | `desdeo-brb[pyomo]` + IPOPT |
+| JAX backend | Local, autodiff | Fast iteration, large datasets | `desdeo-brb[jax]` |
+
+For most problems, `method="SLSQP"` with `n_restarts=10` provides the best balance of speed and solution quality. BRB training is a non-convex optimization problem with multiple local minima, so multiple restarts are strongly recommended.
 
 ## References
 

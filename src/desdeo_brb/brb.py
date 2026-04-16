@@ -226,6 +226,38 @@ class BRBModel:
         """
         return self.predict(X).output
 
+    def explain(
+        self,
+        X: np.ndarray,
+        sample_idx: int = 0,
+        top_k: int = 3,
+        attribute_names: list[str] | None = None,
+        consequent_name: str | None = None,
+        threshold: float = 0.01,
+    ) -> str:
+        """Predict on *X* and return a human-readable explanation.
+
+        Convenience wrapper that calls ``predict(X)`` and then
+        ``InferenceResult.explain()`` with this model's rule base.
+
+        Args:
+            X: Input array of shape ``(n_samples, n_attributes)``.
+            sample_idx: Which sample in the batch to explain.
+            top_k: Number of top-activated rules to show.
+            attribute_names: Display names for each attribute.
+            consequent_name: Display name for the consequent.
+            threshold: Minimum weight/belief to display.
+        """
+        result = self.predict(X)
+        return result.explain(
+            sample_idx=sample_idx,
+            top_k=top_k,
+            rule_base=self.rule_base,
+            attribute_names=attribute_names,
+            consequent_name=consequent_name,
+            threshold=threshold,
+        )
+
     def fit(
         self,
         X: np.ndarray,
@@ -298,8 +330,7 @@ class BRBModel:
                     PYOMO_AVAILABLE = False
                 if not PYOMO_AVAILABLE:
                     raise ImportError(
-                        "Install Pyomo for IPOPT support: "
-                        "pip install desdeo-brb[pyomo]"
+                        "Install Pyomo for IPOPT support: pip install desdeo-brb[pyomo]"
                     )
         else:  # jax
             if method is None:
@@ -391,7 +422,7 @@ class BRBModel:
                 )
                 self.rule_base = self._unflatten_params(perturbed_flat)
 
-            _run_one()
+            _run_one(verbose_inner=verbose)
 
             y_pred = self.predict_values(X)
             mse = float(np.mean((y - y_pred) ** 2))
@@ -534,6 +565,19 @@ class BRBModel:
         legacy_options = minimize_kwargs.pop("options", {}) or {}
         options = {**default_options, **legacy_options, **(optimizer_options or {})}
 
+        # L-BFGS-B's built-in disp/iprint is deprecated in scipy 1.17+.
+        # Use a callback for per-iteration output instead.
+        callback = None
+        if verbose:
+            _iter_count = [0]
+
+            def _verbose_callback(xk):
+                _iter_count[0] += 1
+                loss = float(mse_loss(jnp.asarray(xk)))
+                print(f"  JAX L-BFGS-B iter {_iter_count[0]}: loss={loss:.6f}")
+
+            callback = _verbose_callback
+
         result = minimize(
             objective_and_grad,
             x0,
@@ -541,6 +585,7 @@ class BRBModel:
             jac=True,
             bounds=bounds,
             options=options,
+            callback=callback,
             **minimize_kwargs,
         )
 
@@ -580,7 +625,9 @@ class BRBModel:
         else:
             rw_sigmoid = sp_sigmoid(rw_raw)
             rw_sum = rw_sigmoid.sum()
-            rule_weights = rw_sigmoid / rw_sum if rw_sum > 0 else np.full(n_rules, 1.0 / n_rules)
+            rule_weights = (
+                rw_sigmoid / rw_sum if rw_sum > 0 else np.full(n_rules, 1.0 / n_rules)
+            )
         idx += n_rules
 
         aw_size = n_rules * n_attributes
@@ -659,24 +706,58 @@ class BRBModel:
             "tol": 1e-8,
             "print_level": 5 if verbose else 0,
             "mu_strategy": "adaptive",
+            "nlp_scaling_method": "gradient-based",
+            # Accept "good enough" before numerical breakdown
+            "acceptable_tol": 1e-2,
+            "acceptable_iter": 10,
+            "acceptable_dual_inf_tol": 1e10,  # don't reject on dual infeasibility
+            "acceptable_compl_inf_tol": 1e-2,
+            "acceptable_obj_change_tol": 1e-3,  # stop if objective barely changing
         }
         for k, v in {**default_options, **(optimizer_options or {})}.items():
             solver.options[k] = v
 
-        result = solver.solve(pyomo_model, tee=verbose)
+        # load_solutions=False so Pyomo doesn't crash when IPOPT errors
+        # but still found an intermediate solution.
+        result = solver.solve(pyomo_model, tee=verbose, load_solutions=False)
 
+        status = str(result.solver.status).lower()
         term = str(result.solver.termination_condition).lower()
-        if term not in ("optimal", "locally_optimal", "feasible"):
+
+        # Try to load the solution. Pyomo's load_from refuses "error"
+        # status, but IPOPT writes its best iterate to the .sol file
+        # even on crash. Override the status to "warning" temporarily
+        # so load_from accepts it.
+        solution_loaded = False
+        if len(result.solution) > 0:
+            import pyomo.opt as pyopt
+
+            original_status = result.solver.status
+            try:
+                result.solver.status = pyopt.SolverStatus.warning
+                pyomo_model.solutions.load_from(result)
+                solution_loaded = True
+            except Exception:
+                pass
+            finally:
+                result.solver.status = original_status
+
+        if solution_loaded:
+            if verbose and term not in ("optimal", "locallyoptimal", "feasible"):
+                print(
+                    f"IPOPT terminated with {term} "
+                    f"(objective={pyo.value(pyomo_model.obj):.4f}). "
+                    f"Extracted partial solution."
+                )
+            self.update_from_pyomo(pyomo_model)
+        else:
             import warnings
 
             warnings.warn(
-                f"IPOPT terminated with non-optimal status: "
-                f"{result.solver.termination_condition}. "
-                f"Extracting best solution found.",
+                f"IPOPT failed (status={status}, condition={term}). "
+                f"No solution found. Model parameters unchanged.",
                 stacklevel=3,
             )
-
-        self.update_from_pyomo(pyomo_model)
 
     def _fit_de(
         self,
@@ -720,9 +801,7 @@ class BRBModel:
         opts = {**default_options, **(optimizer_options or {})}
 
         x0 = self._flatten_params()
-        result = differential_evolution(
-            objective, bounds=bounds_list, x0=x0, **opts
-        )
+        result = differential_evolution(objective, bounds=bounds_list, x0=x0, **opts)
 
         self.rule_base = self._unflatten_params(self._normalize_flat(result.x))
 
@@ -805,9 +884,7 @@ class BRBModel:
         try:
             import pyomo.environ as pyo
         except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "Install Pyomo: pip install desdeo-brb[pyomo]"
-            ) from exc
+            raise ImportError("Install Pyomo: pip install desdeo-brb[pyomo]") from exc
 
         n_rules = pyomo_model._brb_n_rules
         n_consequents = pyomo_model._brb_n_consequents
@@ -921,8 +998,7 @@ class BRBModel:
         """
         if method not in ("SLSQP", "trust-constr"):
             raise ValueError(
-                f"fit_custom supports method='SLSQP' or 'trust-constr', "
-                f"got {method!r}"
+                f"fit_custom supports method='SLSQP' or 'trust-constr', got {method!r}"
             )
         if n_restarts < 1:
             raise ValueError(f"n_restarts must be >= 1, got {n_restarts}")

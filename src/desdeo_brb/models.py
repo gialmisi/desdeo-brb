@@ -92,6 +92,62 @@ class RuleBase(BaseModel):
     def n_consequents(self) -> int:
         return len(self.consequent_referential_values)
 
+    def describe_rule(
+        self,
+        k: int,
+        attribute_names: list[str] | None = None,
+        consequent_name: str | None = None,
+        show_zero_beliefs: bool = False,
+    ) -> str:
+        """Return a human-readable description of rule *k*.
+
+        Args:
+            k: Rule index (0-based).
+            attribute_names: Display names for each attribute. If ``None``,
+                uses ``x1, x2, ...``.
+            consequent_name: Display name for the consequent. If ``None``,
+                omitted from the output.
+            show_zero_beliefs: If ``False`` (default), skip consequent
+                values whose belief degree is below 0.001.
+        """
+        if attribute_names is None:
+            attribute_names = [f"x{i + 1}" for i in range(self.n_attributes)]
+
+        # Build the IF clause
+        conditions = []
+        for i in range(self.n_attributes):
+            idx = int(self.rule_antecedent_indices[k, i])
+            val = float(self.precedent_referential_values[i][idx])
+            conditions.append(f"{attribute_names[i]} is {val:.4g}")
+        if_clause = " AND ".join(conditions)
+
+        # Build the THEN clause
+        crv = self.consequent_referential_values
+        bd = self.belief_degrees[k]
+        belief_parts = []
+        for n in range(self.n_consequents):
+            if not show_zero_beliefs and bd[n] < 0.001:
+                continue
+            belief_parts.append(f"{float(crv[n]):.4g}: {bd[n]:.3f}")
+        then_clause = "{" + ", ".join(belief_parts) + "}"
+        if consequent_name is not None:
+            then_clause = f"{consequent_name} = {then_clause}"
+
+        theta = float(self.rule_weights[k])
+        return f"Rule {k}: IF {if_clause} THEN {then_clause} [w={theta:.3f}]"
+
+    def describe_all_rules(
+        self,
+        attribute_names: list[str] | None = None,
+        consequent_name: str | None = None,
+        show_zero_beliefs: bool = False,
+    ) -> str:
+        """Return a multi-line string describing every rule."""
+        return "\n".join(
+            self.describe_rule(k, attribute_names, consequent_name, show_zero_beliefs)
+            for k in range(self.n_rules)
+        )
+
 
 class InferenceResult(BaseModel):
     """Container for the full trace of a BRB inference call.
@@ -126,6 +182,86 @@ class InferenceResult(BaseModel):
         # argsort in descending order and take top_k
         sorted_indices = np.argsort(-self.activation_weights, axis=1)
         return sorted_indices[:, :top_k]
+
+    def explain(
+        self,
+        sample_idx: int = 0,
+        top_k: int = 3,
+        rule_base: "RuleBase | None" = None,
+        attribute_names: list[str] | None = None,
+        consequent_name: str | None = None,
+        threshold: float = 0.01,
+    ) -> str:
+        """Return a human-readable explanation of a single prediction.
+
+        Args:
+            sample_idx: Which sample in the batch to explain.
+            top_k: Number of top-activated rules to show.
+            rule_base: The ``RuleBase`` used for the prediction. If
+                provided, rule descriptions include antecedent values.
+                If ``None``, rules are identified by index only.
+            attribute_names: Passed through to ``RuleBase.describe_rule``.
+            consequent_name: Passed through to ``RuleBase.describe_rule``.
+            threshold: Minimum activation weight or belief degree to
+                display; values below this are omitted for clarity.
+        """
+        lines: list[str] = []
+        s = sample_idx
+
+        # Scalar output
+        lines.append(f"Prediction: {float(self.output[s]):.4g}")
+        lines.append("")
+
+        # Top activated rules
+        w = self.activation_weights[s]
+        top_indices = np.argsort(-w)[:top_k]
+        lines.append("Top activated rules:")
+        for k_idx in top_indices:
+            wk = float(w[k_idx])
+            if wk < threshold:
+                continue
+            if rule_base is not None:
+                # Build a compact rule description (beliefs only, no weight)
+                bd = rule_base.belief_degrees[int(k_idx)]
+                crv = rule_base.consequent_referential_values
+                belief_str = ", ".join(
+                    f"{float(crv[n]):.4g}: {bd[n]:.3f}"
+                    for n in range(len(crv))
+                    if bd[n] >= threshold
+                )
+
+                if attribute_names is None:
+                    attr_names = [
+                        f"x{i + 1}" for i in range(rule_base.n_attributes)
+                    ]
+                else:
+                    attr_names = attribute_names
+                ante_parts = []
+                for i in range(rule_base.n_attributes):
+                    idx = int(rule_base.rule_antecedent_indices[k_idx, i])
+                    val = float(rule_base.precedent_referential_values[i][idx])
+                    ante_parts.append(f"{attr_names[i]}={val:.4g}")
+                ante_str = ", ".join(ante_parts)
+                lines.append(
+                    f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): "
+                    f"{{{belief_str}}}"
+                )
+            else:
+                lines.append(f"  Rule {int(k_idx)} (w={wk:.4f})")
+
+        # Combined belief distribution
+        lines.append("")
+        lines.append("Combined belief distribution:")
+        crv = self.consequent_values
+        beta = self.combined_belief_degrees[s]
+        parts = []
+        for n in range(len(crv)):
+            if beta[n] < threshold:
+                continue
+            parts.append(f"{float(crv[n]):.4g}: {beta[n]:.3f}")
+        lines.append(f"  {{{', '.join(parts)}}}")
+
+        return "\n".join(lines)
 
     def to_dict(self) -> dict:
         """Return a JSON-serializable summary of the inference result.
