@@ -29,3 +29,63 @@ jobs:
 
       - name: Publish
         run: uv publish
+
+  smoke-test:
+    name: "Smoke test ${{ matrix.extras }}"
+    needs: publish
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extras:
+          - ""           # core only
+          - "[jax]"
+          - "[pyomo]"
+          - "[all]"
+    steps:
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Wait for PyPI propagation
+        run: sleep 60
+
+      - name: Install from PyPI
+        run: |
+          pip install "desdeo-brb${{ matrix.extras }}"
+
+      - name: Verify core import
+        run: |
+          python -c "
+          from desdeo_brb import BRBModel, RuleBase, InferenceResult
+          import numpy as np
+          prv = [np.array([0.0, 1.0, 2.0])]
+          crv = np.array([0.0, 0.5, 1.0])
+          model = BRBModel(prv, crv)
+          y = model.predict_values(np.array([[0.5]]))
+          assert y.shape == (1,), f'Wrong shape: {y.shape}'
+          print(f'Core OK: predict_values returned {y}')
+          "
+
+      - name: Verify JAX import
+        if: matrix.extras == '[jax]' || matrix.extras == '[all]'
+        run: |
+          python -c "
+          from desdeo_brb import BRBModel
+          import numpy as np
+          prv = [np.array([0.0, 1.0, 2.0])]
+          crv = np.array([0.0, 0.5, 1.0])
+          model = BRBModel(prv, crv, backend='jax')
+          y = model.predict_values(np.array([[0.5]]))
+          print(f'JAX OK: predict_values returned {y}')
+          "
+
+      - name: Verify Pyomo import
+        if: matrix.extras == '[pyomo]' || matrix.extras == '[all]'
+        run: |
+          python -c "
+          from desdeo_brb.pyomo_backend import build_pyomo_brb_model, PYOMO_AVAILABLE
+          assert PYOMO_AVAILABLE, 'Pyomo not available'
+          print('Pyomo OK: import successful')
+          "
