@@ -86,27 +86,27 @@ See `notebooks/01_getting_started.ipynb` for a full walkthrough with plots.
 
 `BRBModel` follows the [scikit-learn estimator interface](https://scikit-learn.org/stable/developers/develop.html) and can be used anywhere an sklearn estimator is expected (e.g., `cross_val_score`, `GridSearchCV`, pipelines).
 
-| Symbol | Description |
-|--------|-------------|
-| `BRBModel(prv, crv, ...)` | Constructor. Pass referential values and optionally a `RuleBase`, `initial_rule_fn`, `utility_fn`, or `backend="jax"`. |
+| Symbol                                                          | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BRBModel(prv, crv, ...)`                                       | Constructor. Pass referential values and optionally a `RuleBase`, `initial_rule_fn`, `utility_fn`, or `backend="jax"`.                                                                                                                                                                                                                                                                                                                                                   |
 | `.fit(X, y, method=..., optimizer_options=..., n_restarts=...)` | Train by minimizing MSE. NumPy backend supports `"SLSQP"` (default), `"trust-constr"`, `"DE"` (differential evolution), `"DE+SLSQP"` (global search then local polish), and `"ipopt"` (requires `desdeo-brb[pyomo]`); JAX backend uses `"L-BFGS-B"` with exact gradients. `"DE+SLSQP"` is recommended for reliable training without needing `n_restarts`. Pass `optimizer_options` to override defaults; for `"DE+SLSQP"` use sub-dicts `{"de": {...}, "slsqp": {...}}`. |
-| `.fit_custom(loss_fn)` | Train with a user-supplied loss function. |
-| `.predict(X)` | Full inference. Returns an `InferenceResult` with all intermediate quantities. |
-| `.predict_values(X)` | Scalar outputs only, shape `(n_samples,)`. |
-| `.score(X, y)` | Negative MSE (sklearn convention: higher is better). |
-| `.get_params()` / `.set_params()` | Sklearn-compatible parameter access. |
-| `.rule_base` | The current `RuleBase` (belief degrees, weights, referential values). |
+| `.fit_custom(loss_fn)`                                          | Train with a user-supplied loss function.                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `.predict(X)`                                                   | Full inference. Returns an `InferenceResult` with all intermediate quantities.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `.predict_values(X)`                                            | Scalar outputs only, shape `(n_samples,)`.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `.score(X, y)`                                                  | Negative MSE (sklearn convention: higher is better).                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `.get_params()` / `.set_params()`                               | Sklearn-compatible parameter access.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `.rule_base`                                                    | The current `RuleBase` (belief degrees, weights, referential values).                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **`InferenceResult` fields:**
 
-| Field | Description |
-|-------|-------------|
-| `output` | Scalar predictions, shape `(n_samples,)` |
-| `activation_weights` | Per-rule activation, shape `(n_samples, n_rules)` |
-| `combined_belief_degrees` | Output belief distribution, shape `(n_samples, n_consequents)` |
-| `input_belief_distributions` | Per-attribute input beliefs (list of arrays) |
-| `dominant_rules(top_k)` | Indices of the top-k most activated rules per sample |
-| `to_dict()` | JSON-serializable summary |
+| Field                        | Description                                                    |
+| ---------------------------- | -------------------------------------------------------------- |
+| `output`                     | Scalar predictions, shape `(n_samples,)`                       |
+| `activation_weights`         | Per-rule activation, shape `(n_samples, n_rules)`              |
+| `combined_belief_degrees`    | Output belief distribution, shape `(n_samples, n_consequents)` |
+| `input_belief_distributions` | Per-attribute input beliefs (list of arrays)                   |
+| `dominant_rules(top_k)`      | Indices of the top-k most activated rules per sample           |
+| `to_dict()`                  | JSON-serializable summary                                      |
 
 See source docstrings for full details.
 
@@ -126,14 +126,14 @@ See the notebooks for worked examples with mathematical context.
 
 ## Training methods
 
-| Method | Type | Best for | Requires |
-|--------|------|----------|----------|
-| `SLSQP` (default) | Local, constrained | Small models with `n_restarts` | NumPy, SciPy |
-| `trust-constr` | Local, constrained | Alternative to SLSQP | NumPy, SciPy |
-| `DE` | Global, evolutionary | Large models, complex landscapes | NumPy, SciPy |
-| `DE+SLSQP` | Global + local polish | Reliable single-run training | NumPy, SciPy |
-| `ipopt` | Local, interior-point | Custom Pyomo objectives | `desdeo-brb[pyomo]` + IPOPT |
-| JAX backend | Local, autodiff | Fast iteration, large datasets | `desdeo-brb[jax]` |
+| Method            | Type                  | Best for                         | Requires                    |
+| ----------------- | --------------------- | -------------------------------- | --------------------------- |
+| `SLSQP` (default) | Local, constrained    | Small models with `n_restarts`   | NumPy, SciPy                |
+| `trust-constr`    | Local, constrained    | Alternative to SLSQP             | NumPy, SciPy                |
+| `DE`              | Global, evolutionary  | Large models, complex landscapes | NumPy, SciPy                |
+| `DE+SLSQP`        | Global + local polish | Reliable single-run training     | NumPy, SciPy                |
+| `ipopt`           | Local, interior-point | Custom Pyomo objectives          | `desdeo-brb[pyomo]` + IPOPT |
+| JAX backend       | Local, autodiff       | Fast iteration, large datasets   | `desdeo-brb[jax]`           |
 
 For most problems, `method="SLSQP"` with `n_restarts=10` provides the best balance of speed and solution quality. BRB training is a non-convex optimization problem with multiple local minima, so multiple restarts are strongly recommended.
 
@@ -144,31 +144,79 @@ Evidential Reasoning approach) framework. Key papers:
 
 1. Yang, J.-B., Liu, J., Wang, J., Sii, H.-S., & Wang, H.-W. (2006). Belief
    rule-base inference methodology using the evidential reasoning approach — RIMER.
-   *IEEE Transactions on Systems, Man, and Cybernetics — Part A*, 36(2), 266-285.
+   _IEEE Transactions on Systems, Man, and Cybernetics — Part A_, 36(2), 266-285.
 2. Yang, J.-B., Liu, J., Xu, D.-L., Wang, J., & Wang, H.-W. (2007). Optimization
-   models for training belief-rule-based systems. *IEEE Transactions on Systems,
-   Man, and Cybernetics — Part A*, 37(4), 569-585.
+   models for training belief-rule-based systems. _IEEE Transactions on Systems,
+   Man, and Cybernetics — Part A_, 37(4), 569-585.
 3. Chen, Y.-W., Yang, J.-B., Xu, D.-L., Zhou, Z.-J., & Tang, D.-W. (2011).
-   Inference analysis and adaptive training for belief rule based systems. *Expert
-   Systems with Applications*, 38(10), 12845-12860.
+   Inference analysis and adaptive training for belief rule based systems. _Expert
+   Systems with Applications_, 38(10), 12845-12860.
 4. Xu, D.-L., Liu, J., Yang, J.-B., Liu, G.-P., Wang, J., Jenkinson, I., & Ren,
    J. (2007). Inference and learning methodology of belief-rule-based expert system
-   for pipeline leak detection. *Expert Systems with Applications*, 32(1), 103-113.
+   for pipeline leak detection. _Expert Systems with Applications_, 32(1), 103-113.
 5. Misitano, G. (2020). Interactively learning the preferences of a decision
-   maker in multi-objective optimization utilizing belief-rules. *IEEE SSCI 2020*,
+   maker in multi-objective optimization utilizing belief-rules. _IEEE SSCI 2020_,
    133-140.
 
 ## Citation
 
-If using this software in academic work, please cite:
+If using this software in academic work, please cite the following sources.
 
-```
-Misitano, G. (2020). Interactively Learning the Preferences of a Decision Maker
-in Multi-objective Optimization Utilizing Belief-rules. IEEE SSCI 2020.
+**The library** (until the JOSS paper is published):
 
-Chen, Y.-W., Yang, J.-B., Xu, D.-L., Zhou, Z.-J., & Tang, D.-W. (2011).
-Inference analysis and adaptive training for belief rule based systems.
-Expert Systems with Applications, 38(10), 12845-12860.
+> Misitano, G. (2020). Interactively Learning the Preferences of a Decision Maker
+> in Multi-objective Optimization Utilizing Belief-rules. _IEEE SSCI 2020_, 133–140.
+
+**Belief Rule-Based systems (RIMER methodology)**:
+
+> Yang, J.-B., Liu, J., Wang, J., Sii, H.-S., & Wang, H.-W. (2006).
+> Belief rule-base inference methodology using the evidential reasoning approach — RIMER.
+> _IEEE Transactions on Systems, Man, and Cybernetics — Part A_, 36(2), 266–285.
+
+**Evidential Reasoning approach**:
+
+> Yang, J.-B. & Xu, D.-L. (2002). On the evidential reasoning algorithm for
+> multiattribute decision analysis under uncertainty.
+> _IEEE Transactions on Systems, Man, and Cybernetics — Part A_, 32(3), 289–304.
+
+### BibTeX
+
+```bibtex
+@inproceedings{Misitano2020,
+  author    = {Misitano, Giovanni},
+  title     = {Interactively Learning the Preferences of a Decision Maker
+               in Multi-objective Optimization Utilizing Belief-rules},
+  booktitle = {2020 IEEE Symposium Series on Computational Intelligence (SSCI)},
+  pages     = {133--140},
+  year      = {2020},
+  doi       = {10.1109/SSCI47803.2020.9308316}
+}
+
+@article{YangEtAl2006,
+  author  = {Yang, Jian-Bo and Liu, Jun and Wang, Jin and Sii, How-Sing and Wang, Hong-Wei},
+  title   = {Belief rule-base inference methodology using the evidential
+             reasoning approach -- {RIMER}},
+  journal = {IEEE Transactions on Systems, Man, and Cybernetics -- Part A:
+             Systems and Humans},
+  volume  = {36},
+  number  = {2},
+  pages   = {266--285},
+  year    = {2006},
+  doi     = {10.1109/TSMCA.2005.851270}
+}
+
+@article{YangXu2002,
+  author  = {Yang, Jian-Bo and Xu, Dong-Ling},
+  title   = {On the evidential reasoning algorithm for multiattribute
+             decision analysis under uncertainty},
+  journal = {IEEE Transactions on Systems, Man, and Cybernetics -- Part A:
+             Systems and Humans},
+  volume  = {32},
+  number  = {3},
+  pages   = {289--304},
+  year    = {2002},
+  doi     = {10.1109/TSMCA.2002.802746}
+}
 ```
 
 ## Maintainer
