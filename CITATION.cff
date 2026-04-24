@@ -12,6 +12,7 @@ authors:
     orcid: "https://orcid.org/0000-0002-4673-7388"
 repository-code: "https://github.com/gialmisi/desdeo-brb"
 url: "https://desdeo-brb.readthedocs.io"
+doi: "10.5281/zenodo.XXXXXXX"
 license: MIT
 keywords:
   - belief-rule-base
