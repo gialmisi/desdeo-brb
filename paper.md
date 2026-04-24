@@ -57,7 +57,7 @@ general-purpose, publicly available, open source software library for trainable
 BRB systems. The current dominant
 software, the Intelligent Decision System (IDS), is a proprietary, closed-source
 Microsoft Windows desktop application developed at Manchester [@xu2006ids]. While BRB inference is grounded in Dempster-Shafer theory,
-existing open-source implementations of that theory, notably the R packages
+existing open source implementations of that theory, notably the R packages
 `ibelief` [@zhou_ibelief], `dst` [@boivin_dst], and `evclust` [@denoeux_evclust],
 provide only the underlying evidence combination primitives. None implements the
 higher-level RIMER pipeline: input transformation to belief distributions, rule
