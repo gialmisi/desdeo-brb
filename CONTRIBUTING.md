@@ -50,6 +50,9 @@ Feature requests are welcome as issues. Please describe:
 
 - All public functions must have tests
 - Use `pytest` fixtures from `tests/conftest.py` where appropriate
+  <!-- TODO: tests/conftest.py does not exist yet; create it and migrate the
+       fixtures currently duplicated across test modules. -->
+
 - Mark slow tests with `@pytest.mark.slow`
 - Aim for meaningful coverage, not just line coverage
 
