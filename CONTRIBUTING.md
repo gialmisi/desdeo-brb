@@ -22,7 +22,7 @@ Feature requests are welcome as issues. Please describe:
 
 ## Contributing code
 
-1. **Fork** the repository and create a feature branch from `main`.
+1. **Fork** the repository and create a feature branch from `master`.
 2. **Install** the development dependencies:
    ```bash
    uv sync --all-extras
@@ -43,7 +43,7 @@ Feature requests are welcome as issues. Please describe:
 
 - Follow PEP 8 (enforced by `ruff`)
 - Use type hints for all public functions
-- Write docstrings in NumPy style for all public API
+- Write docstrings in Google style for all public API
 - Keep lines under 100 characters
 
 ## Testing
