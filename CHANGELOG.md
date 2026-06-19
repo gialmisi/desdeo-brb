@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-06-19
+
+### Added
+
+- `py.typed` marker so type information ships with the package and is picked up
+  by downstream type checkers (PEP 561), matching the `Typing :: Typed`
+  classifier.
+- Community health files: GitHub issue and pull request templates.
+
+### Fixed
+
+- Corrected the Zenodo DOI in the README badge to match `CITATION.cff`.
+- `CONTRIBUTING.md` now references the correct default branch (`master`) and the
+  docstring style actually used in the codebase (Google, matching `mkdocs.yml`).
+
+### Dependencies
+
+- Bumped several development, docs, and notebook dependencies via Dependabot
+  (e.g. `jupyterlab`, `notebook`, `jupyter-server`, `tornado`, `bleach`,
+  `mistune`, `urllib3`, `idna`, `pymdown-extensions`). No changes to the core
+  runtime dependencies.
+
+[1.0.1]: https://github.com/gialmisi/desdeo-brb/releases/tag/v1.0.1
+
 ## [1.0.0] - 2026-04-16
 
 ### Added

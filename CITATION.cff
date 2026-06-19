@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
 title: "desdeo-brb: A trainable Belief Rule-Based inference system"
-version: 1.0.0
-date-released: 2026-04-16
+version: 1.0.1
+date-released: 2026-06-19
 authors:
   - family-names: "Misitano"
     given-names: "Giovanni"

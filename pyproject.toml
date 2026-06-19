@@ -1,6 +1,6 @@
 [project]
 name = "desdeo-brb"
-version = "1.0.0"
+version = "1.0.1"
 description = "A trainable Belief Rule-Based (BRB) inference system with a scikit-learn-compatible API."
 readme = "README.md"
 license = "MIT"
