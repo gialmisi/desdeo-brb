@@ -15,7 +15,10 @@ class RuleBase(BaseModel):
         precedent_referential_values: List of 1D sorted arrays, one per
             attribute. Arrays may have varying lengths.
         consequent_referential_values: 1D sorted array of consequent values.
-        belief_degrees: Shape ``(n_rules, n_consequents)``, rows sum to 1.
+        belief_degrees: Shape ``(n_rules, n_consequents)``, rows non-negative
+            and summing to at most 1. A row summing to less than 1 is an
+            incomplete rule: the shortfall is the degree of ignorance about that
+            rule's consequent, and a row of zeros is total ignorance.
         rule_weights: Shape ``(n_rules,)``, sums to 1, values in [0, 1].
         attribute_weights: Shape ``(n_rules, n_attributes)``, values >= 0.
         rule_antecedent_indices: Shape ``(n_rules, n_attributes)``, integer
@@ -61,9 +64,18 @@ class RuleBase(BaseModel):
                 f"does not match expected ({n_rules}, {n_attributes})"
             )
 
+        if np.any(self.belief_degrees < 0):
+            raise ValueError("belief_degrees must be non-negative")
+
+        # RIMER (Yang et al. 2006, Eq. 3) requires only that a rule's belief
+        # degrees sum to at most one. A shortfall is ignorance about that rule's
+        # consequent, which the evidential reasoning combination carries through
+        # to the result rather than discarding.
         row_sums = self.belief_degrees.sum(axis=1)
-        if not np.allclose(row_sums, 1.0, atol=1e-6):
-            raise ValueError(f"Each row of belief_degrees must sum to 1 (got row sums: {row_sums})")
+        if np.any(row_sums > 1.0 + 1e-6):
+            raise ValueError(
+                f"Each row of belief_degrees must sum to at most 1 (got row sums: {row_sums})"
+            )
 
         if not np.allclose(self.rule_weights.sum(), 1.0, atol=1e-6):
             raise ValueError(f"rule_weights must sum to 1 (got {self.rule_weights.sum()})")
@@ -76,6 +88,23 @@ class RuleBase(BaseModel):
     @property
     def n_rules(self) -> int:
         return len(self.rule_weights)
+
+    @property
+    def ignorance(self) -> np.ndarray:
+        """Return the belief mass each rule leaves unassigned.
+
+        Zero for a complete rule, one for a rule that says nothing about its
+        consequent.
+
+        Returns:
+            1-D array of shape ``(n_rules,)``.
+        """
+        return np.clip(1.0 - self.belief_degrees.sum(axis=1), 0.0, 1.0)
+
+    @property
+    def is_complete(self) -> bool:
+        """Return whether every rule assigns all of its belief."""
+        return bool(np.allclose(self.ignorance, 0.0, atol=1e-6))
 
     @property
     def n_attributes(self) -> int:
@@ -152,6 +181,9 @@ class InferenceResult(BaseModel):
         combined_belief_degrees: Shape ``(n_samples, n_consequents)``.
         consequent_values: 1-D array of consequent referential values.
         output: Shape ``(n_samples,)``, scalar numerical outputs.
+        utility_bounds: Optional pair of arrays of shape ``(n_samples,)``
+            bounding the output when the assessment is incomplete. Equal to each
+            other, and to ``output``, when it is complete.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -161,6 +193,26 @@ class InferenceResult(BaseModel):
     combined_belief_degrees: np.ndarray
     consequent_values: np.ndarray
     output: np.ndarray
+    utility_bounds: tuple[np.ndarray, np.ndarray] | None = None
+
+    @property
+    def ignorance(self) -> np.ndarray:
+        """Return the belief each combined assessment leaves unassigned.
+
+        The ``beta_H`` of Yang and Xu (2002), Eq. 25b: the extent to which the
+        result is incomplete, which arises when the rules that fired were
+        themselves incomplete about their consequents.
+
+        Returns:
+            1-D array of shape ``(n_samples,)``, zero when every assessment is
+            complete.
+        """
+        return np.clip(1.0 - self.combined_belief_degrees.sum(axis=1), 0.0, 1.0)
+
+    @property
+    def is_complete(self) -> bool:
+        """Return whether every combined assessment assigns all of its belief."""
+        return bool(np.allclose(self.ignorance, 0.0, atol=1e-6))
 
     def dominant_rules(self, top_k: int = 3) -> np.ndarray:
         """Return the indices of the top-k most activated rules per sample.
@@ -256,10 +308,14 @@ class InferenceResult(BaseModel):
 
         Numpy arrays are converted to nested Python lists.
         """
-        return {
+        record = {
             "input_belief_distributions": [a.tolist() for a in self.input_belief_distributions],
             "activation_weights": self.activation_weights.tolist(),
             "combined_belief_degrees": self.combined_belief_degrees.tolist(),
             "consequent_values": self.consequent_values.tolist(),
             "output": self.output.tolist(),
+            "ignorance": self.ignorance.tolist(),
         }
+        if self.utility_bounds is not None:
+            record["utility_bounds"] = [bound.tolist() for bound in self.utility_bounds]
+        return record

@@ -48,17 +48,51 @@ def test_rule_base_valid_construction():
     assert rb.n_consequents == 2
 
 
+def _rule_base(belief_degrees):
+    """Build a one-attribute rule base around the given belief degrees."""
+    belief_degrees = np.asarray(belief_degrees)
+    n_rules = belief_degrees.shape[0]
+    return RuleBase(
+        precedent_referential_values=[np.array([0.0, 1.0])],
+        consequent_referential_values=np.array([0.0, 1.0]),
+        belief_degrees=belief_degrees,
+        rule_weights=np.full(n_rules, 1.0 / n_rules),
+        attribute_weights=np.ones((n_rules, 1)),
+        rule_antecedent_indices=np.zeros((n_rules, 1), dtype=int),
+    )
+
+
+def test_rule_base_accepts_incomplete_belief_degrees():
+    """A row summing to less than 1 is an incomplete rule, not an invalid one.
+
+    RIMER (Yang et al. 2006, Eq. 3) requires only that a rule's belief degrees
+    sum to at most one. The shortfall is the degree of ignorance about that
+    rule's consequent, and a row of zeros is total ignorance.
+    """
+    rule_base = _rule_base([[0.3, 0.3], [0.5, 0.5], [0.0, 0.0]])
+
+    np.testing.assert_allclose(rule_base.ignorance, [0.4, 0.0, 1.0])
+    assert not rule_base.is_complete
+
+
+def test_rule_base_reports_a_complete_rule_base_as_complete():
+    assert _rule_base([[0.5, 0.5], [1.0, 0.0]]).is_complete
+
+
 def test_rule_base_belief_degree_validation():
-    """Rows not summing to 1 raises ValidationError."""
+    """Rows summing to more than 1 raise ValidationError.
+
+    Belief may be withheld but not over-assigned: more than a rule's worth of
+    belief has no reading in the evidential reasoning combination.
+    """
     with pytest.raises(ValidationError, match="belief_degrees"):
-        RuleBase(
-            precedent_referential_values=[np.array([0.0, 1.0])],
-            consequent_referential_values=np.array([0.0, 1.0]),
-            belief_degrees=np.array([[0.3, 0.3]]),  # sums to 0.6
-            rule_weights=np.array([1.0]),
-            attribute_weights=np.ones((1, 1)),
-            rule_antecedent_indices=np.array([[0]]),
-        )
+        _rule_base([[0.7, 0.6]])  # sums to 1.3
+
+
+def test_rule_base_negative_belief_degree():
+    """Negative belief degrees raise ValidationError."""
+    with pytest.raises(ValidationError, match="belief_degrees"):
+        _rule_base([[-0.1, 0.5]])
 
 
 def test_rule_base_rule_weight_validation():

@@ -14,6 +14,7 @@ from desdeo_brb.inference import (
     compute_activation_weights,
     compute_combined_belief_degrees,
     compute_output,
+    compute_utility_bounds,
     input_transform,
 )
 from desdeo_brb.models import InferenceResult, RuleBase
@@ -160,6 +161,9 @@ class BRBModel:
             combined_belief_degrees=combined,
             consequent_values=rb.consequent_referential_values,
             output=output,
+            utility_bounds=compute_utility_bounds(
+                combined, rb.consequent_referential_values, self._utility_fn
+            ),
         )
 
     def _predict_jax(self, X: np.ndarray) -> InferenceResult:
@@ -201,6 +205,9 @@ class BRBModel:
             combined_belief_degrees=np.asarray(combined),
             consequent_values=rb.consequent_referential_values,
             output=np.asarray(output),
+            utility_bounds=compute_utility_bounds(
+                np.asarray(combined), rb.consequent_referential_values, self._utility_fn
+            ),
         )
 
     def predict_values(self, X: np.ndarray) -> np.ndarray:

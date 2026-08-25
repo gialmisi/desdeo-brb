@@ -239,6 +239,36 @@ def compute_combined_belief_degrees(bre_matrix: np.ndarray, weights: np.ndarray)
     return beta
 
 
+def compute_utility_bounds(
+    belief_degrees: np.ndarray,
+    consequents: np.ndarray,
+    utility_fn: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bound the scalar output when the combined assessment is incomplete.
+
+    Implements the utility interval of Yang and Xu (2002), Section II-H. Belief
+    left unassigned could belong to any grade, so the output is only known to
+    lie between the value obtained by giving all of it to the least preferred
+    grade and the value obtained by giving all of it to the most preferred one.
+
+    When the assessment is complete the two bounds coincide with each other and
+    with `compute_output`, so nothing changes for a complete rule base.
+
+    Args:
+        belief_degrees: Shape ``(n_samples, n_consequents)`` with combined
+            belief degrees, which may sum to less than one.
+        consequents: 1-D array of consequent referential values.
+        utility_fn: Optional function mapping consequent values to utilities.
+
+    Returns:
+        Two 1-D arrays of shape ``(n_samples,)``, the lower and upper bound.
+    """
+    u = utility_fn(consequents) if utility_fn is not None else consequents
+    assigned = belief_degrees @ u
+    unassigned = np.clip(1.0 - belief_degrees.sum(axis=1), 0.0, 1.0)
+    return assigned + unassigned * u.min(), assigned + unassigned * u.max()
+
+
 def compute_output(
     belief_degrees: np.ndarray,
     consequents: np.ndarray,
@@ -248,6 +278,11 @@ def compute_output(
 
     Applies a utility function to the consequent referential values, then
     computes the weighted sum with the combined belief degrees.
+
+    Belief left unassigned contributes nothing, so for an incomplete assessment
+    this is the lower bound of `compute_utility_bounds` whenever the least
+    preferred grade has zero utility. Use that function when the width of the
+    interval matters.
 
     Args:
         belief_degrees: 2-D array of shape ``(n_samples, n_consequents)``

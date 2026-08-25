@@ -7,6 +7,7 @@ from desdeo_brb.inference import (
     compute_activation_weights,
     compute_combined_belief_degrees,
     compute_output,
+    compute_utility_bounds,
     input_transform,
 )
 
@@ -171,3 +172,119 @@ def test_compute_output_custom_utility():
     # Utility squares the values
     y = compute_output(belief_degrees, consequents, utility_fn=lambda d: d**2)
     assert_allclose(y, [1.0])
+
+
+# Cross-check against the recursive evidential reasoning algorithm
+
+
+def _recursive_er(beta, w):
+    """Combine belief degrees the long way, one rule at a time.
+
+    This is the recursive form of the ER algorithm as stated in Yang and Xu
+    (2013), Eqs. (14) to (17). It is deliberately a separate implementation
+    from the analytical formula under test, so that the two agreeing is
+    evidence about the formula rather than about shared code.
+
+    Returns the combined belief degrees and the degree of global ignorance.
+    """
+    n_rules = beta.shape[0]
+
+    # Eq. (14). The residual support of a rule splits in two: the part left
+    # over because the rule is incomplete, and the part left over because the
+    # rule carries less than all of the weight.
+    m = w[0] * beta[0]
+    m_theta = w[0] * (1.0 - beta[0].sum())
+    m_powerset = 1.0 - w[0]
+
+    for k in range(1, n_rules):
+        m_next = w[k] * beta[k]
+        m_theta_next = w[k] * (1.0 - beta[k].sum())
+        m_powerset_next = 1.0 - w[k]
+
+        # Eq. (16d).
+        cross = np.outer(m, m_next)
+        normaliser = 1.0 / (1.0 - (cross.sum() - np.trace(cross)))
+
+        # Eqs. (16a) to (16c).
+        m, m_theta, m_powerset = (
+            normaliser
+            * (m * m_next + m * (m_theta_next + m_powerset_next) + (m_theta + m_powerset) * m_next),
+            normaliser
+            * (m_theta * m_theta_next + m_theta * m_powerset_next + m_powerset * m_theta_next),
+            normaliser * (m_powerset * m_powerset_next),
+        )
+
+    # Eqs. (17a) and (17b).
+    return m / (1.0 - m_powerset), m_theta / (1.0 - m_powerset)
+
+
+def test_combined_belief_matches_recursive_er_when_complete():
+    """The analytical formula agrees with the recursive algorithm."""
+    bre = np.array([[0.6, 0.3, 0.1], [0.2, 0.5, 0.3], [0.1, 0.1, 0.8]])
+    weights = np.array([0.5, 0.3, 0.2])
+
+    beta = compute_combined_belief_degrees(bre, weights[np.newaxis, :])[0]
+    expected, ignorance = _recursive_er(bre, weights)
+
+    assert_allclose(beta, expected, atol=1e-10)
+    assert_allclose(ignorance, 0.0, atol=1e-10)
+
+
+def test_combined_belief_matches_recursive_er_when_incomplete():
+    """Agreement holds once rules stop assigning all of their belief.
+
+    The analytical formula keeps the row sum of the rule base separate from
+    one, which is what lets it carry the ignorance of an incomplete rule
+    through the combination instead of silently dropping it.
+    """
+    rng = np.random.default_rng(20260825)
+
+    for _ in range(200):
+        n_rules = int(rng.integers(2, 6))
+        n_consequents = int(rng.integers(2, 5))
+
+        raw = rng.random((n_rules, n_consequents))
+        # Leave each rule a random amount of belief unassigned.
+        totals = rng.random(n_rules) * rng.choice([1.0, 0.6, 0.3], size=n_rules)
+        bre = raw / raw.sum(axis=1, keepdims=True) * totals[:, np.newaxis]
+
+        weights = rng.random(n_rules)
+        weights /= weights.sum()
+
+        beta = compute_combined_belief_degrees(bre, weights[np.newaxis, :])[0]
+        expected, ignorance = _recursive_er(bre, weights)
+
+        assert_allclose(beta, expected, atol=1e-9)
+        assert_allclose(1.0 - beta.sum(), ignorance, atol=1e-9)
+
+
+def test_utility_bounds_collapse_when_complete():
+    """A complete assessment leaves nothing for the bounds to disagree about."""
+    consequents = np.array([0.0, 0.5, 1.0])
+    belief_degrees = np.array([[0.2, 0.3, 0.5]])
+
+    lower, upper = compute_utility_bounds(belief_degrees, consequents)
+    assert_allclose(lower, upper, atol=1e-12)
+    assert_allclose(lower, compute_output(belief_degrees, consequents), atol=1e-12)
+
+
+def test_utility_bounds_span_the_unassigned_belief():
+    """Unassigned belief could have gone to any grade, so it widens the interval."""
+    consequents = np.array([0.0, 0.5, 1.0])
+    # A quarter of the belief is unassigned.
+    belief_degrees = np.array([[0.25, 0.25, 0.25]])
+
+    lower, upper = compute_utility_bounds(belief_degrees, consequents)
+    assert_allclose(lower, 0.375, atol=1e-12)  # all of it to the worst grade
+    assert_allclose(upper, 0.625, atol=1e-12)  # all of it to the best grade
+    assert_allclose(upper - lower, 0.25, atol=1e-12)
+
+
+def test_utility_bounds_total_ignorance_spans_the_whole_range():
+    """A rule base that says nothing bounds the output only by its own scale."""
+    consequents = np.array([2.0, 5.0, 9.0])
+    belief_degrees = np.zeros((1, 3))
+
+    lower, upper = compute_utility_bounds(belief_degrees, consequents)
+    assert_allclose(lower, 2.0, atol=1e-12)
+    assert_allclose(upper, 9.0, atol=1e-12)
