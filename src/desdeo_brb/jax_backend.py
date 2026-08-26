@@ -151,17 +151,35 @@ def compute_activation_weights_jax(
 def compute_combined_belief_degrees_jax(
     bre_matrix: "jnp.ndarray",
     weights: "jnp.ndarray",
+    group_sizes: tuple[int, ...] | None = None,
 ) -> "jnp.ndarray":
     """Combine belief degrees using the ER algorithm (JAX version).
 
     Args:
         bre_matrix: Shape ``(n_rules, n_consequents)``.
         weights: Shape ``(n_samples, n_rules)``.
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output. With several outputs the blocks are
+            combined one at a time and concatenated again, because each output
+            is an independent evidential reasoning problem over the same
+            activated rules. Must be concrete (not a traced array), since the
+            loop is unrolled at trace time.
 
     Returns:
         Shape ``(n_samples, n_consequents)``.
     """
     _check_jax()
+
+    if group_sizes is not None and len(group_sizes) > 1:
+        # Independent evidential reasoning per output over shared activation
+        # weights. Unrolled at trace time because group_sizes is static.
+        parts, start = [], 0
+        for size in group_sizes:
+            parts.append(
+                compute_combined_belief_degrees_jax(bre_matrix[:, start : start + size], weights)
+            )
+            start += size
+        return jnp.concatenate(parts, axis=1)
     n_rules, n_consequents = bre_matrix.shape
 
     bre_row_sums = bre_matrix.sum(axis=1)
@@ -203,18 +221,42 @@ def compute_combined_belief_degrees_jax(
 def compute_output_jax(
     belief_degrees: "jnp.ndarray",
     consequents: "jnp.ndarray",
+    group_sizes: tuple[int, ...] | None = None,
 ) -> "jnp.ndarray":
-    """Compute scalar outputs (JAX version, identity utility only).
+    """Compute scalar outputs (JAX version).
+
+    Mirrors `desdeo_brb.inference.compute_output`, returning the average
+    expected utility so that an incomplete assessment lands at the midpoint of
+    its utility interval rather than at a value below its own lower bound.
 
     Args:
         belief_degrees: Shape ``(n_samples, n_consequents)``.
-        consequents: Shape ``(n_consequents,)``.
+        consequents: Shape ``(n_consequents,)``. These are utilities when the
+            caller has already applied a utility function, and the consequent
+            referential values otherwise. Applying the utility outside this
+            function keeps an arbitrary Python callable off the traced path.
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output. Each output is scored against its own
+            grades. Must be concrete (not a traced array).
 
     Returns:
         Shape ``(n_samples,)``.
     """
     _check_jax()
-    return belief_degrees @ consequents
+    if group_sizes is not None and len(group_sizes) > 1:
+        outputs, start = [], 0
+        for size in group_sizes:
+            outputs.append(
+                compute_output_jax(
+                    belief_degrees[:, start : start + size], consequents[start : start + size]
+                )
+            )
+            start += size
+        return jnp.stack(outputs, axis=1)
+
+    assigned = belief_degrees @ consequents
+    unassigned = jnp.clip(1.0 - belief_degrees.sum(axis=1), 0.0, 1.0)
+    return assigned + unassigned * 0.5 * (consequents.min() + consequents.max())
 
 
 # Full differentiable inference
@@ -229,6 +271,7 @@ def full_inference_jax(
     n_consequents: int,
     n_attributes: int,
     rv_lengths: tuple[int, ...],
+    group_sizes: tuple[int, ...] | None = None,
 ) -> "jnp.ndarray":
     """End-to-end differentiable inference from flat parameters to outputs.
 
@@ -247,9 +290,12 @@ def full_inference_jax(
         n_attributes: Number of attributes (static).
         rv_lengths: Tuple of Python ints with referential value lengths
             per attribute (static — required for JIT tracing).
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output (static — required for JIT tracing).
 
     Returns:
-        1D array of shape ``(n_samples,)`` with predicted outputs.
+        Shape ``(n_samples,)`` for a single output, ``(n_samples, n_outputs)``
+        otherwise, with predicted outputs.
     """
     _check_jax()
 
@@ -279,8 +325,8 @@ def full_inference_jax(
     weights = compute_activation_weights_jax(
         alphas, rule_antecedent_indices, rule_weights, attribute_weights
     )
-    combined = compute_combined_belief_degrees_jax(belief_degrees, weights)
-    output = compute_output_jax(combined, consequent_rv)
+    combined = compute_combined_belief_degrees_jax(belief_degrees, weights, group_sizes)
+    output = compute_output_jax(combined, consequent_rv, group_sizes)
 
     return output
 
@@ -295,6 +341,8 @@ def full_inference_jax_unconstrained(
     n_attributes: int,
     rv_lengths: tuple[int, ...],
     normalize_rule_weights: bool = True,
+    allow_incomplete: bool = False,
+    group_sizes: tuple[int, ...] | None = None,
 ) -> "jnp.ndarray":
     """End-to-end inference from unconstrained parameters.
 
@@ -308,9 +356,22 @@ def full_inference_jax_unconstrained(
         Same as :func:`full_inference_jax`, except ``flat_params`` is in
         unconstrained space (logits for belief degrees/rule weights,
         unconstrained reals for attribute weights).
+        allow_incomplete: If True, belief rows are free to sum to less than
+            one, with the shortfall being the rule's ignorance.
         normalize_rule_weights: If True, apply softmax to rule weights
             (constraining them to the simplex). If False, apply sigmoid
             (each weight independently in [0, 1]).
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output (static — required for JIT tracing).
+            Each output's block is put through its own softmax, so what a rule
+            believes about one objective does not constrain what it believes
+            about another.
+
+    Note:
+        This reparameterisation must stay in step with
+        ``BRBModel._unflatten_from_unconstrained``, which decodes the result.
+        The optimizer minimises this function, so if the two disagree the
+        fitted parameters will not mean what the resulting rule base says.
     """
     _check_jax()
     idx = 0
@@ -318,7 +379,23 @@ def full_inference_jax_unconstrained(
     # Apply softmax to belief degrees
     bd_size = n_rules * n_consequents
     bd_raw = flat_params[idx : idx + bd_size].reshape(n_rules, n_consequents)
-    bd = jax.nn.softmax(bd_raw, axis=1)
+    # Each output's block is normalised on its own, so the belief a rule places
+    # on one objective says nothing about how much it places on another.
+    sizes = group_sizes if group_sizes is not None else (n_consequents,)
+    bd_parts, start = [], 0
+    for size in sizes:
+        raw = bd_raw[:, start : start + size]
+        if allow_incomplete:
+            # Softmax over the block's grades plus one implicit grade pinned at
+            # logit zero, standing for ignorance. The visible entries then sum
+            # to strictly less than one and the shortfall is a free parameter,
+            # which is what Yang et al. (2007) constraint 12b permits.
+            raw = jnp.concatenate([raw, jnp.zeros((n_rules, 1))], axis=1)
+            bd_parts.append(jax.nn.softmax(raw, axis=1)[:, :size])
+        else:
+            bd_parts.append(jax.nn.softmax(raw, axis=1))
+        start += size
+    bd = jnp.concatenate(bd_parts, axis=1)
     idx += bd_size
 
     # Rule weights: softmax if normalized, sigmoid otherwise
@@ -354,6 +431,7 @@ def full_inference_jax_unconstrained(
         n_consequents,
         n_attributes,
         rv_lengths,
+        group_sizes,
     )
 
 
@@ -361,7 +439,13 @@ def full_inference_jax_unconstrained(
 if JAX_AVAILABLE:
     full_inference_jax_jit = jax.jit(
         full_inference_jax,
-        static_argnames=("n_rules", "n_consequents", "n_attributes", "rv_lengths"),
+        static_argnames=(
+            "n_rules",
+            "n_consequents",
+            "n_attributes",
+            "rv_lengths",
+            "group_sizes",
+        ),
     )
     full_inference_jax_unconstrained_jit = jax.jit(
         full_inference_jax_unconstrained,
@@ -371,5 +455,7 @@ if JAX_AVAILABLE:
             "n_attributes",
             "rv_lengths",
             "normalize_rule_weights",
+            "allow_incomplete",
+            "group_sizes",
         ),
     )

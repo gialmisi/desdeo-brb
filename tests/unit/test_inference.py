@@ -288,3 +288,66 @@ def test_utility_bounds_total_ignorance_spans_the_whole_range():
     lower, upper = compute_utility_bounds(belief_degrees, consequents)
     assert_allclose(lower, 2.0, atol=1e-12)
     assert_allclose(upper, 9.0, atol=1e-12)
+
+
+def test_output_is_the_midpoint_of_the_bounds():
+    """The point estimate sits exactly between the two bounds.
+
+    This is the invariant the first version of these bounds violated. With a
+    utility whose least preferred grade is not zero, the old output fell below
+    its own lower bound.
+    """
+    consequents = np.array([0.0, 0.5, 1.0])
+    belief_degrees = np.array([[0.25, 0.25, 0.25]])
+
+    def utility(d):
+        return 10.0 * d + 5.0
+
+    lower, upper = compute_utility_bounds(belief_degrees, consequents, utility)
+    output = compute_output(belief_degrees, consequents, utility)
+
+    assert_allclose(output, 0.5 * (lower + upper), atol=1e-12)
+    # assigned = 0.25*(5 + 10 + 15) = 7.5, and the unassigned quarter is worth
+    # the average of the extreme grades, 0.25 * (5 + 15) / 2 = 2.5.
+    assert_allclose(output, 10.0, atol=1e-9)
+    assert_allclose(lower, 8.75, atol=1e-9)
+    assert_allclose(upper, 11.25, atol=1e-9)
+
+
+def test_output_is_bracketed_by_the_bounds():
+    """The bounds bracket the output whatever the utility and the ignorance."""
+    rng = np.random.default_rng(20260826)
+
+    for _ in range(300):
+        n_consequents = int(rng.integers(2, 6))
+        # An offset utility is what exposes the bug: with the identity on
+        # consequents starting at zero, the lower bound and the old output
+        # happened to agree.
+        consequents = np.sort(rng.random(n_consequents) * 20.0 - 10.0)
+
+        raw = rng.random((1, n_consequents))
+        total = rng.random() * rng.choice([1.0, 0.5])
+        belief_degrees = raw / raw.sum() * total
+
+        lower, upper = compute_utility_bounds(belief_degrees, consequents)
+        output = compute_output(belief_degrees, consequents)
+
+        assert lower[0] <= output[0] + 1e-12
+        assert output[0] <= upper[0] + 1e-12
+
+
+def test_output_unchanged_for_a_complete_assessment():
+    """A complete assessment still gives the plain weighted sum."""
+    rng = np.random.default_rng(7)
+
+    for _ in range(100):
+        n_consequents = int(rng.integers(2, 6))
+        consequents = np.sort(rng.random(n_consequents) * 20.0 - 10.0)
+        raw = rng.random((1, n_consequents))
+        belief_degrees = raw / raw.sum()
+
+        assert_allclose(
+            compute_output(belief_degrees, consequents),
+            belief_degrees @ consequents,
+            atol=1e-12,
+        )

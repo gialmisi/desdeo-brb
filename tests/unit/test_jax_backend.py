@@ -229,3 +229,48 @@ def test_full_inference_jax_is_differentiable():
     grad = jax.grad(loss)(flat_params)
     assert grad.shape == flat_params.shape
     assert jnp.all(jnp.isfinite(grad))
+
+
+def test_backends_agree_when_a_utility_function_is_given():
+    """A utility function must not change which backend you happen to use.
+
+    The JAX output path takes utilities rather than raw referential values,
+    because an arbitrary Python callable cannot be traced. Before that was
+    wired up, passing utility_fn together with backend="jax" was silently
+    ignored and the two backends disagreed.
+    """
+    from desdeo_brb.brb import BRBModel
+    from desdeo_brb.models import RuleBase
+
+    precedent_rv = [np.array([0.0, 1.0])]
+    consequent_rv = np.array([0.0, 0.5, 1.0])
+    rule_base = RuleBase(
+        precedent_referential_values=precedent_rv,
+        consequent_referential_values=consequent_rv,
+        belief_degrees=np.array([[0.6, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        rule_weights=np.array([0.5, 0.5]),
+        attribute_weights=np.ones((2, 1)),
+        rule_antecedent_indices=np.array([[0], [1]]),
+    )
+    X = np.array([[0.0], [0.25], [0.5], [0.75], [1.0]])
+
+    # An offset utility, so that ignoring it is visible in the output.
+    def utility(d):
+        return 10.0 * d + 5.0
+
+    outputs = {}
+    for backend in ("numpy", "jax"):
+        model = BRBModel(
+            precedent_rv,
+            consequent_rv,
+            rule_base=rule_base,
+            backend=backend,
+            utility_fn=utility,
+        )
+        result = model.predict(X)
+        outputs[backend] = result.output
+        lower, upper = result.utility_bounds
+        assert np.all(lower <= result.output + 1e-9)
+        assert np.all(result.output <= upper + 1e-9)
+
+    assert_allclose(outputs["numpy"], outputs["jax"], atol=1e-6)

@@ -11,6 +11,7 @@ import numpy as np
 from scipy.optimize import LinearConstraint, differential_evolution, minimize
 
 from desdeo_brb.inference import (
+    _utilities_per_block,
     compute_activation_weights,
     compute_combined_belief_degrees,
     compute_output,
@@ -19,6 +20,11 @@ from desdeo_brb.inference import (
 )
 from desdeo_brb.models import InferenceResult, RuleBase
 from desdeo_brb.utils import build_rule_antecedent_indices, pad_referential_values
+
+# Ignorance given to a complete rule base when it is trained with incomplete
+# rows allowed. Small enough to leave predictions alone, large enough that the
+# optimizer has a gradient to follow if the data prefers a vaguer rule.
+_INCOMPLETE_SEED = 1e-2
 
 
 class BRBModel:
@@ -43,7 +49,7 @@ class BRBModel:
     def __init__(
         self,
         precedent_referential_values: list[np.ndarray],
-        consequent_referential_values: np.ndarray,
+        consequent_referential_values: np.ndarray | list[np.ndarray],
         rule_base: RuleBase | None = None,
         utility_fn: Callable[[np.ndarray], np.ndarray] | None = None,
         initial_rule_fn: Callable[[np.ndarray], float] | None = None,
@@ -61,8 +67,21 @@ class BRBModel:
         self._precedent_referential_values = [
             np.asarray(rv, dtype=float) for rv in precedent_referential_values
         ]
-        self._consequent_referential_values = np.asarray(consequent_referential_values, dtype=float)
+        # A list of arrays declares one output per entry, each with its own
+        # grades; a plain array is the single-output case. Both end up stored
+        # concatenated, with the group sizes saying where each output begins.
+        if isinstance(consequent_referential_values, (list, tuple)):
+            groups = [np.asarray(rv, dtype=float) for rv in consequent_referential_values]
+            self._consequent_group_sizes: tuple[int, ...] | None = tuple(len(rv) for rv in groups)
+            self._consequent_referential_values = np.concatenate(groups)
+        else:
+            self._consequent_group_sizes = None
+            self._consequent_referential_values = np.asarray(
+                consequent_referential_values, dtype=float
+            )
         self._utility_fn = utility_fn
+        self._allow_incomplete = False
+        self._scale_outputs = True
         self._ref_value_lengths = [len(rv) for rv in self._precedent_referential_values]
 
         if rule_base is not None:
@@ -85,11 +104,16 @@ class BRBModel:
         if initial_rule_fn is not None:
             belief_degrees = self._beliefs_from_fn(initial_rule_fn, rule_antecedent_indices)
         else:
-            belief_degrees = np.full((n_rules, n_consequents), 1.0 / n_consequents)
+            # Uniform within each output's own block, so every block sums to one.
+            sizes = self._consequent_group_sizes or (n_consequents,)
+            belief_degrees = np.concatenate(
+                [np.full((n_rules, size), 1.0 / size) for size in sizes], axis=1
+            )
 
         return RuleBase(
             precedent_referential_values=self._precedent_referential_values,
             consequent_referential_values=self._consequent_referential_values,
+            consequent_group_sizes=self._consequent_group_sizes,
             belief_degrees=belief_degrees,
             rule_weights=rule_weights,
             attribute_weights=attribute_weights,
@@ -98,14 +122,25 @@ class BRBModel:
 
     def _beliefs_from_fn(
         self,
-        fn: Callable[[np.ndarray], float],
+        fn: Callable[[np.ndarray], float | np.ndarray],
         rule_antecedent_indices: np.ndarray,
     ) -> np.ndarray:
-        """Compute initial belief degrees from a function over antecedent values."""
+        """Compute initial belief degrees from a function over antecedent values.
+
+        With several outputs the function returns one value per output and each
+        is interpolated within its own grades, because the grades of one
+        objective say nothing about another's.
+        """
         crv = self._consequent_referential_values
+        sizes = self._consequent_group_sizes or (len(crv),)
+        n_outputs = len(sizes)
         n_rules = len(rule_antecedent_indices)
-        n_consequents = len(crv)
-        belief_degrees = np.zeros((n_rules, n_consequents))
+        belief_degrees = np.zeros((n_rules, len(crv)))
+
+        blocks, start = [], 0
+        for size in sizes:
+            blocks.append(slice(start, start + size))
+            start += size
 
         for k in range(n_rules):
             # Build the antecedent value vector for rule k
@@ -115,21 +150,149 @@ class BRBModel:
                     for i in range(len(self._precedent_referential_values))
                 ]
             )
-            y_k = float(fn(x_k))
+            y_k = np.atleast_1d(np.asarray(fn(x_k), dtype=float))
+            if y_k.size != n_outputs:
+                raise ValueError(
+                    f"initial_rule_fn must return {n_outputs} value(s), one per output, "
+                    f"got {y_k.size}"
+                )
 
-            # Distribute belief via linear interpolation on consequent values
-            if y_k <= crv[0]:
-                belief_degrees[k, 0] = 1.0
-            elif y_k >= crv[-1]:
-                belief_degrees[k, -1] = 1.0
-            else:
-                j = np.searchsorted(crv, y_k, side="right") - 1
-                j = min(j, n_consequents - 2)
-                frac = (y_k - crv[j]) / (crv[j + 1] - crv[j])
-                belief_degrees[k, j] = 1.0 - frac
-                belief_degrees[k, j + 1] = frac
+            for o, block in enumerate(blocks):
+                values = crv[block]
+                offset = block.start
+                y = float(y_k[o])
+
+                # Distribute belief via linear interpolation on consequent values
+                if y <= values[0]:
+                    belief_degrees[k, offset] = 1.0
+                elif y >= values[-1]:
+                    belief_degrees[k, offset + len(values) - 1] = 1.0
+                else:
+                    j = np.searchsorted(values, y, side="right") - 1
+                    j = min(j, len(values) - 2)
+                    frac = (y - values[j]) / (values[j + 1] - values[j])
+                    belief_degrees[k, offset + j] = 1.0 - frac
+                    belief_degrees[k, offset + j + 1] = frac
 
         return belief_degrees
+
+    def _consequent_utilities(self) -> np.ndarray:
+        """Return the consequent values with the utility function applied.
+
+        The JAX and Pyomo paths cannot call an arbitrary Python callable, so
+        they consume utilities computed here instead of raw referential values.
+        """
+        rb = self.rule_base
+        crv = rb.consequent_referential_values
+        if self._utility_fn is None:
+            return crv
+        return np.concatenate(_utilities_per_block(crv, rb.consequent_slices, self._utility_fn))
+
+    def _output_scales(self) -> np.ndarray:
+        """Return the divisor applied to each output's residual before squaring.
+
+        Objectives carry their own units, so an output whose grades span 100 to
+        400 contributes roughly ninety thousand times the squared error of one
+        spanning 0 to 1, and a plain sum would fit the first and ignore the
+        second. Dividing each residual by the span of that output's own grades
+        makes the terms dimensionless and comparable.
+
+        This is a fixed weighting chosen from the rule base rather than from the
+        data. Yang et al. (2007), Eqs. (19c) to (22), instead normalise by the
+        ideal and the payoff-table worst of each objective and minimise the
+        largest scaled error, which yields an efficient solution but costs one
+        extra training run per output and needs a constrained optimizer.
+
+        A single-output rule base gets a divisor of one, so its loss and its
+        score are exactly what they were before.
+        """
+        rule_base = self.rule_base
+        if rule_base.n_outputs == 1 or not self._scale_outputs:
+            return np.ones(rule_base.n_outputs)
+
+        utilities = self._consequent_utilities()
+        spans = []
+        for block in rule_base.consequent_slices:
+            values = utilities[block]
+            span = float(values.max() - values.min())
+            # A degenerate output with one grade, or all grades equal, cannot be
+            # scaled by its own span; leave it alone rather than divide by zero.
+            spans.append(span if span > 0 else 1.0)
+        return np.asarray(spans, dtype=float)
+
+    def _mean_squared_error(self, y: np.ndarray, y_pred: np.ndarray) -> float:
+        """Mean squared error over samples and outputs, each output scaled."""
+        residual = (np.asarray(y) - y_pred) / self._output_scales()
+        return float(np.mean(residual**2))
+
+    def _resolve_allow_incomplete(self, allow_incomplete: bool | None) -> bool:
+        """Decide whether training may leave belief rows summing to under one.
+
+        ``None`` means follow the rule base being trained. Forcing completeness
+        on a rule base that arrived incomplete would silently discard the
+        ignorance an expert had deliberately expressed, and forcing it on one
+        that arrived complete would invent ignorance nobody asked for.
+        """
+        if allow_incomplete is None:
+            return not self.rule_base.is_complete
+        return bool(allow_incomplete)
+
+    def _check_target_shape(self, y: np.ndarray) -> None:
+        """Reject a target array whose shape does not match the outputs.
+
+        Without this a single-column target against a multi-output rule base
+        would broadcast into something silently meaningless rather than fail.
+        """
+        n_outputs = self.rule_base.n_outputs
+        y = np.asarray(y)
+        if n_outputs == 1:
+            if y.ndim != 1 and not (y.ndim == 2 and y.shape[1] == 1):
+                raise ValueError(
+                    f"y must have shape (n_samples,) for a single output, got {y.shape}"
+                )
+        elif y.ndim != 2 or y.shape[1] != n_outputs:
+            raise ValueError(
+                f"y must have shape (n_samples, {n_outputs}) for a rule base with "
+                f"{n_outputs} outputs, got {y.shape}"
+            )
+
+    def _append_belief_constraint(self, constraints: list[dict], start: int, end: int) -> None:
+        """Constrain one rule's belief block for one output.
+
+        An equality when the trained rule base must come out complete, and a
+        cap otherwise: Yang et al. (2007) impose the sum-to-one equality only
+        when completeness is wanted, and their constraint 12b caps the sum at
+        one in every case.
+        """
+        if self._allow_incomplete:
+
+            def bd_slack(flat: np.ndarray, s: int = start, e: int = end) -> float:
+                return float(1.0 - flat[s:e].sum())
+
+            constraints.append({"type": "ineq", "fun": bd_slack})
+        else:
+
+            def bd_constraint(flat: np.ndarray, s: int = start, e: int = end) -> float:
+                return float(flat[s:e].sum() - 1.0)
+
+            constraints.append({"type": "eq", "fun": bd_constraint})
+
+    def _project_beliefs(self, bd: np.ndarray) -> np.ndarray:
+        """Clip belief degrees and bring each output's block within its budget.
+
+        Each output is normalised on its own: what a rule believes about one
+        objective places no constraint on what it believes about another.
+        """
+        bd = np.clip(bd, 0.0, 1.0)
+        for block in self.rule_base.consequent_slices:
+            sums = bd[:, block].sum(axis=1, keepdims=True)
+            if self._allow_incomplete:
+                # Only over-assignment violates the constraint. A block summing
+                # to less than one is a legitimate incomplete rule.
+                bd[:, block] /= np.where(sums > 1.0, sums, 1.0)
+            else:
+                bd[:, block] /= np.where(sums > 0, sums, 1.0)
+        return bd
 
     def predict(self, X: np.ndarray) -> InferenceResult:
         """Run the full inference pipeline on input data.
@@ -152,8 +315,15 @@ class BRBModel:
         weights = compute_activation_weights(
             alphas, rb.rule_antecedent_indices, rb.rule_weights, rb.attribute_weights
         )
-        combined = compute_combined_belief_degrees(rb.belief_degrees, weights)
-        output = compute_output(combined, rb.consequent_referential_values, self._utility_fn)
+        combined = compute_combined_belief_degrees(
+            rb.belief_degrees, weights, rb.consequent_group_sizes
+        )
+        output = compute_output(
+            combined,
+            rb.consequent_referential_values,
+            self._utility_fn,
+            rb.consequent_group_sizes,
+        )
 
         return InferenceResult(
             input_belief_distributions=alphas,
@@ -162,8 +332,12 @@ class BRBModel:
             consequent_values=rb.consequent_referential_values,
             output=output,
             utility_bounds=compute_utility_bounds(
-                combined, rb.consequent_referential_values, self._utility_fn
+                combined,
+                rb.consequent_referential_values,
+                self._utility_fn,
+                rb.consequent_group_sizes,
             ),
+            consequent_group_sizes=rb.consequent_group_sizes,
         )
 
     def _predict_jax(self, X: np.ndarray) -> InferenceResult:
@@ -191,8 +365,14 @@ class BRBModel:
             jnp.asarray(rb.rule_weights),
             jnp.asarray(rb.attribute_weights),
         )
-        combined = compute_combined_belief_degrees_jax(jnp.asarray(rb.belief_degrees), weights)
-        output = compute_output_jax(combined, jnp.asarray(rb.consequent_referential_values))
+        combined = compute_combined_belief_degrees_jax(
+            jnp.asarray(rb.belief_degrees), weights, rb.consequent_group_sizes
+        )
+        # The utility is applied here rather than inside the traced function, so
+        # that an arbitrary Python callable never has to be JAX traceable.
+        output = compute_output_jax(
+            combined, jnp.asarray(self._consequent_utilities()), rb.consequent_group_sizes
+        )
 
         # Convert back to numpy; split padded alphas into list
         alphas_list = [
@@ -206,8 +386,12 @@ class BRBModel:
             consequent_values=rb.consequent_referential_values,
             output=np.asarray(output),
             utility_bounds=compute_utility_bounds(
-                np.asarray(combined), rb.consequent_referential_values, self._utility_fn
+                np.asarray(combined),
+                rb.consequent_referential_values,
+                self._utility_fn,
+                rb.consequent_group_sizes,
             ),
+            consequent_group_sizes=rb.consequent_group_sizes,
         )
 
     def predict_values(self, X: np.ndarray) -> np.ndarray:
@@ -260,6 +444,8 @@ class BRBModel:
         fix_endpoints: bool = True,
         fix_endpoint_beliefs: bool = False,
         normalize_rule_weights: bool = True,
+        allow_incomplete: bool | None = None,
+        scale_outputs: bool = True,
         method: str | None = None,
         optimizer_options: dict | None = None,
         n_restarts: int = 1,
@@ -284,6 +470,18 @@ class BRBModel:
                 are known to be correct (e.g., from ``initial_rule_fn`` or
                 verified expert knowledge) to prevent the optimizer from
                 distorting endpoint predictions.
+            allow_incomplete: Whether belief rows may sum to less than one
+                during training, the shortfall being the rule's ignorance.
+                ``None`` (default) follows the rule base: a rule base that
+                arrives incomplete keeps that freedom, one that arrives
+                complete stays complete. Yang et al. (2007) impose the
+                sum-to-one equality only when a complete trained rule base is
+                wanted; their constraint 12b otherwise caps the sum at one.
+            scale_outputs: If ``True`` (default), divide each output's
+                residual by the span of that output's grades before squaring,
+                so objectives on wider scales do not dominate the fit. Has no
+                effect on a single-output rule base. Set ``False`` to sum the
+                raw squared errors instead.
             normalize_rule_weights: If ``True`` (default), constrain rule
                 weights to sum to 1 during optimization. If ``False``, only
                 bound each rule weight individually to [0, 1]; the optimizer
@@ -333,6 +531,13 @@ class BRBModel:
 
         if n_restarts < 1:
             raise ValueError(f"n_restarts must be >= 1, got {n_restarts}")
+
+        self._check_target_shape(y)
+
+        # Resolved once here rather than threaded through the ten helpers that
+        # need it, all of which read self._allow_incomplete.
+        self._allow_incomplete = self._resolve_allow_incomplete(allow_incomplete)
+        self._scale_outputs = scale_outputs
 
         def _run_one(verbose_inner: bool = False) -> None:
             if self._backend == "jax":
@@ -416,7 +621,7 @@ class BRBModel:
             _run_one(verbose_inner=verbose)
 
             y_pred = self.predict_values(X)
-            mse = float(np.mean((y - y_pred) ** 2))
+            mse = self._mean_squared_error(y, y_pred)
             improved = mse < best_mse
             if improved:
                 best_mse = mse
@@ -510,7 +715,7 @@ class BRBModel:
         rb = self.rule_base
         X_jax = jnp.asarray(X)
         y_jax = jnp.asarray(y)
-        crv_jax = jnp.asarray(rb.consequent_referential_values)
+        crv_jax = jnp.asarray(self._consequent_utilities())
         rai_jax = jnp.asarray(rb.rule_antecedent_indices)
         rv_lengths_tuple = tuple(self._ref_value_lengths)
 
@@ -518,6 +723,9 @@ class BRBModel:
         n_consequents = rb.n_consequents
         n_attributes = rb.n_attributes
         norm_rw = normalize_rule_weights  # capture as local for closure
+        allow_inc = self._allow_incomplete  # ditto
+        group_sizes = rb.consequent_group_sizes
+        scales_jax = jnp.asarray(self._output_scales())
 
         @jax.jit
         def mse_loss(flat_params):
@@ -531,8 +739,10 @@ class BRBModel:
                 n_attributes,
                 rv_lengths_tuple,
                 normalize_rule_weights=norm_rw,
+                allow_incomplete=allow_inc,
+                group_sizes=group_sizes,
             )
-            return jnp.mean((y_jax - y_pred) ** 2)
+            return jnp.mean(((y_jax - y_pred) / scales_jax) ** 2)
 
         grad_fn = jax.jit(jax.grad(mse_loss))
 
@@ -605,7 +815,19 @@ class BRBModel:
 
         bd_size = n_rules * n_consequents
         bd_raw = flat[idx : idx + bd_size].reshape(n_rules, n_consequents)
-        belief_degrees = sp_softmax(bd_raw, axis=1)
+        # Must match full_inference_jax_unconstrained exactly, block by block:
+        # each output is normalised on its own, and when incomplete rows are
+        # allowed the softmax runs over that block's grades plus one implicit
+        # grade at logit zero standing for ignorance, which is then dropped.
+        bd_parts = []
+        for block in rb.consequent_slices:
+            raw = bd_raw[:, block]
+            if self._allow_incomplete:
+                raw = np.concatenate([raw, np.zeros((n_rules, 1))], axis=1)
+                bd_parts.append(sp_softmax(raw, axis=1)[:, : block.stop - block.start])
+            else:
+                bd_parts.append(sp_softmax(raw, axis=1))
+        belief_degrees = np.concatenate(bd_parts, axis=1)
         idx += bd_size
 
         rw_raw = flat[idx : idx + n_rules]
@@ -631,6 +853,7 @@ class BRBModel:
         return RuleBase(
             precedent_referential_values=precedent_referential_values,
             consequent_referential_values=rb.consequent_referential_values,
+            consequent_group_sizes=rb.consequent_group_sizes,
             belief_degrees=belief_degrees,
             rule_weights=rule_weights,
             attribute_weights=attribute_weights,
@@ -772,7 +995,7 @@ class BRBModel:
             normalized = self._normalize_flat(flat)
             self.rule_base = self._unflatten_params(normalized, validate=False)
             y_pred = self.predict_values(X)
-            return float(np.mean((y - y_pred) ** 2))
+            return self._mean_squared_error(y, y_pred)
 
         default_options: dict[str, Any] = {
             "maxiter": 1000,
@@ -852,7 +1075,8 @@ class BRBModel:
         attribute weights, and referential values from the Pyomo model
         and assembles them into a fresh ``RuleBase`` (with validation).
         Solver-tolerance violations are projected back onto the constraint
-        surface (rows renormalized to sum to 1, attribute weights clipped
+        surface (blocks scaled down if they over-assign, and renormalized to
+        sum to 1 unless incomplete rules are allowed, attribute weights clipped
         to be non-negative, referential values sorted).
 
         This method is the inverse of :func:`build_pyomo_brb_model` for
@@ -885,10 +1109,7 @@ class BRBModel:
         for k in range(n_rules):
             for n in range(n_consequents):
                 belief_degrees[k, n] = float(pyo.value(pyomo_model.beta[k, n]))
-        belief_degrees = np.clip(belief_degrees, 0.0, 1.0)
-        row_sums = belief_degrees.sum(axis=1, keepdims=True)
-        row_sums = np.where(row_sums > 0, row_sums, 1.0)
-        belief_degrees = belief_degrees / row_sums
+        belief_degrees = self._project_beliefs(belief_degrees)
 
         # Extract rule weights and renormalize
         rule_weights = np.array([float(pyo.value(pyomo_model.theta[k])) for k in range(n_rules)])
@@ -917,6 +1138,7 @@ class BRBModel:
         new_rule_base = RuleBase(
             precedent_referential_values=precedent_referential_values,
             consequent_referential_values=np.asarray(consequent_rv),
+            consequent_group_sizes=getattr(pyomo_model, "_brb_consequent_group_sizes", None),
             belief_degrees=belief_degrees,
             rule_weights=rule_weights,
             attribute_weights=attribute_weights,
@@ -1146,15 +1368,21 @@ class BRBModel:
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         """Return negative MSE (sklearn convention: higher is better).
 
+        With several outputs each residual is divided by the span of that
+        output's grades before squaring, so the score is not dominated by
+        whichever objective happens to have the widest units. See
+        ``_output_scales``. A single output is unscaled.
+
         Args:
             X: Input array, shape ``(n_samples, n_attributes)``.
-            y: True target values, shape ``(n_samples,)``.
+            y: True target values, shape ``(n_samples,)`` for a single output
+                and ``(n_samples, n_outputs)`` otherwise.
 
         Returns:
             Negative mean squared error.
         """
         y_pred = self.predict_values(X)
-        return -float(np.mean((y - y_pred) ** 2))
+        return -self._mean_squared_error(y, y_pred)
 
     @property
     def belief_degrees(self) -> np.ndarray:
@@ -1204,7 +1432,24 @@ class BRBModel:
         eps = 1e-12
 
         # Inverse softmax: log(x) (softmax is shift-invariant, so log works)
-        bd_log = np.log(np.clip(rb.belief_degrees, eps, None))
+        if self._allow_incomplete:
+            # Invert the augmented softmax by measuring each belief against its
+            # own block's ignorance column, whose logit is pinned at zero. A
+            # block that arrives complete has no ignorance to measure against,
+            # so seed it with a small one. The seed cannot be arbitrarily
+            # small: the gradient of the loss with respect to these logits
+            # scales with the ignorance itself, so a seed of 1e-6 leaves the
+            # optimizer stranded thirteen logits away with nothing to follow.
+            parts = []
+            for block in rb.consequent_slices:
+                beliefs = rb.belief_degrees[:, block]
+                ignorance = np.clip(
+                    1.0 - beliefs.sum(axis=1, keepdims=True), _INCOMPLETE_SEED, None
+                )
+                parts.append(np.log(np.clip(beliefs, eps, None) / ignorance))
+            bd_log = np.concatenate(parts, axis=1)
+        else:
+            bd_log = np.log(np.clip(rb.belief_degrees, eps, None))
 
         if normalize_rule_weights:
             rw_inv = np.log(np.clip(rb.rule_weights, eps, None))
@@ -1308,6 +1553,7 @@ class BRBModel:
         fields = {
             "precedent_referential_values": precedent_referential_values,
             "consequent_referential_values": rb.consequent_referential_values,
+            "consequent_group_sizes": rb.consequent_group_sizes,
             "belief_degrees": belief_degrees,
             "rule_weights": rule_weights,
             "attribute_weights": attribute_weights,
@@ -1350,9 +1596,7 @@ class BRBModel:
         bd = flat[:bd_size].reshape(n_rules, n_consequents)
         bd = bd + rng.uniform(-0.1, 0.1, size=bd.shape)
         bd = np.clip(bd, 0.0, 1.0)
-        row_sums = bd.sum(axis=1, keepdims=True)
-        row_sums = np.where(row_sums > 0, row_sums, 1.0)
-        bd = bd / row_sums
+        bd = self._project_beliefs(bd)
         flat[:bd_size] = bd.ravel()
 
         # Rule weights: additive noise + clip + always renormalize.
@@ -1411,11 +1655,7 @@ class BRBModel:
         # Belief degrees: clip to [0,1] and renormalize rows
         bd_size = n_rules * n_consequents
         bd = flat[:bd_size].reshape(n_rules, n_consequents)
-        bd = np.clip(bd, 0.0, 1.0)
-        row_sums = bd.sum(axis=1, keepdims=True)
-        row_sums = np.where(row_sums > 0, row_sums, 1.0)
-        bd /= row_sums
-        flat[:bd_size] = bd.ravel()
+        flat[:bd_size] = self._project_beliefs(bd).ravel()
 
         # Rule weights: clip and renormalize
         rw_start = bd_size
@@ -1518,13 +1758,10 @@ class BRBModel:
         for k in range(n_rules):
             if k in skip_bd_rules:
                 continue
-            row_start = bd_offset + k * n_consequents
-            row_end = row_start + n_consequents
-
-            def bd_constraint(flat: np.ndarray, s: int = row_start, e: int = row_end) -> float:
-                return float(flat[s:e].sum() - 1.0)
-
-            constraints.append({"type": "eq", "fun": bd_constraint})
+            for block in rb.consequent_slices:
+                row_start = bd_offset + k * n_consequents + block.start
+                row_end = bd_offset + k * n_consequents + block.stop
+                self._append_belief_constraint(constraints, row_start, row_end)
 
         # Rule weights sum to 1 (only if normalization is enabled)
         if normalize_rule_weights:
@@ -1559,7 +1796,8 @@ class BRBModel:
         """Build constraints in the format required by trust-constr.
 
         Returns a list of ``LinearConstraint`` objects covering:
-        - belief degree row sums = 1 (skipping fixed boundary rules)
+        - belief degree block sums, either fixed at 1 or capped by it when
+          incomplete rules are allowed (skipping fixed boundary rules)
         - rule weight sum = 1
         - referential value ordering inequalities
 
@@ -1580,12 +1818,16 @@ class BRBModel:
 
         # Belief degree rows sum to 1 — combine all free rows into one matrix
         free_rules = [k for k in range(n_rules) if k not in skip_bd_rules]
+        blocks = rb.consequent_slices
         if free_rules:
-            A_bd = np.zeros((len(free_rules), n_params))
-            for row_i, k in enumerate(free_rules):
-                start = k * n_consequents
-                A_bd[row_i, start : start + n_consequents] = 1.0
-            constraints.append(LinearConstraint(A_bd, lb=1.0, ub=1.0))
+            rows = [(k, block) for k in free_rules for block in blocks]
+            A_bd = np.zeros((len(rows), n_params))
+            for row_i, (k, block) in enumerate(rows):
+                offset = k * n_consequents
+                A_bd[row_i, offset + block.start : offset + block.stop] = 1.0
+            # An incomplete rule may assign anything up to all of its belief.
+            bd_lb = 0.0 if self._allow_incomplete else 1.0
+            constraints.append(LinearConstraint(A_bd, lb=bd_lb, ub=1.0))
 
         # Rule weights sum to 1 (only if normalization is enabled)
         if normalize_rule_weights:
@@ -1619,4 +1861,4 @@ class BRBModel:
         """
         self.rule_base = self._unflatten_params(flat_params, validate=False)
         y_pred = self.predict_values(X)
-        return float(np.mean((y - y_pred) ** 2))
+        return self._mean_squared_error(y, y_pred)

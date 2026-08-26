@@ -14,11 +14,17 @@ class RuleBase(BaseModel):
     Attributes:
         precedent_referential_values: List of 1D sorted arrays, one per
             attribute. Arrays may have varying lengths.
-        consequent_referential_values: 1D sorted array of consequent values.
-        belief_degrees: Shape ``(n_rules, n_consequents)``, rows non-negative
-            and summing to at most 1. A row summing to less than 1 is an
-            incomplete rule: the shortfall is the degree of ignorance about that
-            rule's consequent, and a row of zeros is total ignorance.
+        consequent_referential_values: 1D array of consequent values, sorted
+            ascending within each output. With several outputs their grades are
+            concatenated here and delimited by ``consequent_group_sizes``.
+        consequent_group_sizes: Number of grades belonging to each output, or
+            ``None`` for a single output. Outputs keep their own grades because
+            objectives generally have their own scales and units.
+        belief_degrees: Shape ``(n_rules, n_consequents)``, non-negative, with
+            each rule's block for each output summing to at most 1. A block
+            summing to less than 1 is an incomplete rule: the shortfall is the
+            degree of ignorance about that rule's consequent for that output,
+            and a block of zeros is total ignorance.
         rule_weights: Shape ``(n_rules,)``, sums to 1, values in [0, 1].
         attribute_weights: Shape ``(n_rules, n_attributes)``, values >= 0.
         rule_antecedent_indices: Shape ``(n_rules, n_attributes)``, integer
@@ -29,6 +35,7 @@ class RuleBase(BaseModel):
 
     precedent_referential_values: list[np.ndarray]
     consequent_referential_values: np.ndarray
+    consequent_group_sizes: tuple[int, ...] | None = None
     belief_degrees: np.ndarray
     rule_weights: np.ndarray
     attribute_weights: np.ndarray
@@ -43,10 +50,26 @@ class RuleBase(BaseModel):
         for i, rv in enumerate(self.precedent_referential_values):
             if len(rv) > 1 and not np.all(rv[:-1] <= rv[1:]):
                 raise ValueError(f"precedent_referential_values[{i}] must be sorted ascending")
-        if len(self.consequent_referential_values) > 1 and not np.all(
-            self.consequent_referential_values[:-1] <= self.consequent_referential_values[1:]
-        ):
-            raise ValueError("consequent_referential_values must be sorted ascending")
+        if self.consequent_group_sizes is not None:
+            if any(size < 1 for size in self.consequent_group_sizes):
+                raise ValueError(
+                    f"consequent_group_sizes must all be >= 1, got {self.consequent_group_sizes}"
+                )
+            if sum(self.consequent_group_sizes) != n_consequents:
+                raise ValueError(
+                    f"consequent_group_sizes {self.consequent_group_sizes} sum to "
+                    f"{sum(self.consequent_group_sizes)}, but there are {n_consequents} "
+                    "consequent referential values"
+                )
+
+        # Sorting is required within an output, not across the concatenation:
+        # separate objectives have unrelated scales.
+        for o, block in enumerate(self.consequent_slices):
+            values = self.consequent_referential_values[block]
+            if len(values) > 1 and not np.all(values[:-1] <= values[1:]):
+                raise ValueError(
+                    f"consequent_referential_values for output {o} must be sorted ascending"
+                )
 
         if self.belief_degrees.shape != (n_rules, n_consequents):
             raise ValueError(
@@ -71,10 +94,11 @@ class RuleBase(BaseModel):
         # degrees sum to at most one. A shortfall is ignorance about that rule's
         # consequent, which the evidential reasoning combination carries through
         # to the result rather than discarding.
-        row_sums = self.belief_degrees.sum(axis=1)
-        if np.any(row_sums > 1.0 + 1e-6):
+        block_sums = self.block_sums
+        if np.any(block_sums > 1.0 + 1e-6):
             raise ValueError(
-                f"Each row of belief_degrees must sum to at most 1 (got row sums: {row_sums})"
+                "Each rule's belief_degrees must sum to at most 1 for every output "
+                f"(got sums: {block_sums})"
             )
 
         if not np.allclose(self.rule_weights.sum(), 1.0, atol=1e-6):
@@ -84,6 +108,49 @@ class RuleBase(BaseModel):
             raise ValueError("attribute_weights must be non-negative")
 
         return self
+
+    @property
+    def n_outputs(self) -> int:
+        """Return how many consequent attributes this rule base predicts."""
+        if self.consequent_group_sizes is None:
+            return 1
+        return len(self.consequent_group_sizes)
+
+    @property
+    def group_sizes(self) -> tuple[int, ...]:
+        """Return the grade count of each output, single output included."""
+        if self.consequent_group_sizes is None:
+            return (len(self.consequent_referential_values),)
+        return self.consequent_group_sizes
+
+    @property
+    def consequent_slices(self) -> list[slice]:
+        """Return the column range of each output within the concatenation."""
+        slices = []
+        start = 0
+        for size in self.group_sizes:
+            slices.append(slice(start, start + size))
+            start += size
+        return slices
+
+    def consequent_values(self, output: int = 0) -> np.ndarray:
+        """Return the referential values belonging to one output."""
+        return self.consequent_referential_values[self.consequent_slices[output]]
+
+    def beliefs_for(self, output: int = 0) -> np.ndarray:
+        """Return the belief degrees belonging to one output.
+
+        Shape ``(n_rules, n_grades_of_that_output)``.
+        """
+        return self.belief_degrees[:, self.consequent_slices[output]]
+
+    @property
+    def block_sums(self) -> np.ndarray:
+        """Return each rule's assigned belief per output, shape ``(n_rules, n_outputs)``."""
+        return np.stack(
+            [self.belief_degrees[:, block].sum(axis=1) for block in self.consequent_slices],
+            axis=1,
+        )
 
     @property
     def n_rules(self) -> int:
@@ -97,9 +164,11 @@ class RuleBase(BaseModel):
         consequent.
 
         Returns:
-            1-D array of shape ``(n_rules,)``.
+            Shape ``(n_rules,)`` for a single output, ``(n_rules, n_outputs)``
+            otherwise.
         """
-        return np.clip(1.0 - self.belief_degrees.sum(axis=1), 0.0, 1.0)
+        ignorance = np.clip(1.0 - self.block_sums, 0.0, 1.0)
+        return ignorance[:, 0] if self.n_outputs == 1 else ignorance
 
     @property
     def is_complete(self) -> bool:
@@ -181,6 +250,8 @@ class InferenceResult(BaseModel):
         combined_belief_degrees: Shape ``(n_samples, n_consequents)``.
         consequent_values: 1-D array of consequent referential values.
         output: Shape ``(n_samples,)``, scalar numerical outputs.
+        consequent_group_sizes: Number of grades belonging to each output, or
+            ``None`` for a single output.
         utility_bounds: Optional pair of arrays of shape ``(n_samples,)``
             bounding the output when the assessment is incomplete. Equal to each
             other, and to ``output``, when it is complete.
@@ -194,6 +265,24 @@ class InferenceResult(BaseModel):
     consequent_values: np.ndarray
     output: np.ndarray
     utility_bounds: tuple[np.ndarray, np.ndarray] | None = None
+    consequent_group_sizes: tuple[int, ...] | None = None
+
+    @property
+    def n_outputs(self) -> int:
+        """Return how many consequent attributes were predicted."""
+        if self.consequent_group_sizes is None:
+            return 1
+        return len(self.consequent_group_sizes)
+
+    @property
+    def consequent_slices(self) -> list[slice]:
+        """Return the column range of each output within the concatenation."""
+        sizes = self.consequent_group_sizes or (self.combined_belief_degrees.shape[1],)
+        slices, start = [], 0
+        for size in sizes:
+            slices.append(slice(start, start + size))
+            start += size
+        return slices
 
     @property
     def ignorance(self) -> np.ndarray:
@@ -204,10 +293,17 @@ class InferenceResult(BaseModel):
         themselves incomplete about their consequents.
 
         Returns:
-            1-D array of shape ``(n_samples,)``, zero when every assessment is
-            complete.
+            Shape ``(n_samples,)`` for a single output, ``(n_samples,
+            n_outputs)`` otherwise. Zero when every assessment is complete.
         """
-        return np.clip(1.0 - self.combined_belief_degrees.sum(axis=1), 0.0, 1.0)
+        per_output = np.stack(
+            [
+                np.clip(1.0 - self.combined_belief_degrees[:, b].sum(axis=1), 0.0, 1.0)
+                for b in self.consequent_slices
+            ],
+            axis=1,
+        )
+        return per_output[:, 0] if self.n_outputs == 1 else per_output
 
     @property
     def is_complete(self) -> bool:
@@ -253,8 +349,12 @@ class InferenceResult(BaseModel):
         lines: list[str] = []
         s = sample_idx
 
-        # Scalar output
-        lines.append(f"Prediction: {float(self.output[s]):.4g}")
+        # Scalar output, one line per output attribute
+        if self.n_outputs == 1:
+            lines.append(f"Prediction: {float(self.output[s]):.4g}")
+        else:
+            values = ", ".join(f"y{o + 1}={float(v):.4g}" for o, v in enumerate(self.output[s]))
+            lines.append(f"Prediction: {values}")
         lines.append("")
 
         # Top activated rules
@@ -269,11 +369,18 @@ class InferenceResult(BaseModel):
                 # Build a compact rule description (beliefs only, no weight)
                 bd = rule_base.belief_degrees[int(k_idx)]
                 crv = rule_base.consequent_referential_values
-                belief_str = ", ".join(
-                    f"{float(crv[n]):.4g}: {bd[n]:.3f}"
-                    for n in range(len(crv))
-                    if bd[n] >= threshold
-                )
+                # With several outputs each block is shown on its own, because
+                # the grades of one objective say nothing about another's.
+                blocks = rule_base.consequent_slices
+                block_strs = []
+                for block in blocks:
+                    entries = ", ".join(
+                        f"{float(crv[n]):.4g}: {bd[n]:.3f}"
+                        for n in range(block.start, block.stop)
+                        if bd[n] >= threshold
+                    )
+                    block_strs.append("{" + entries + "}")
+                belief_str = " ".join(block_strs) if len(blocks) > 1 else block_strs[0][1:-1]
 
                 if attribute_names is None:
                     attr_names = [f"x{i + 1}" for i in range(rule_base.n_attributes)]
@@ -285,7 +392,10 @@ class InferenceResult(BaseModel):
                     val = float(rule_base.precedent_referential_values[i][idx])
                     ante_parts.append(f"{attr_names[i]}={val:.4g}")
                 ante_str = ", ".join(ante_parts)
-                lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {{{belief_str}}}")
+                if rule_base.n_outputs > 1:
+                    lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {belief_str}")
+                else:
+                    lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {{{belief_str}}}")
             else:
                 lines.append(f"  Rule {int(k_idx)} (w={wk:.4f})")
 
@@ -294,12 +404,15 @@ class InferenceResult(BaseModel):
         lines.append("Combined belief distribution:")
         crv = self.consequent_values
         beta = self.combined_belief_degrees[s]
-        parts = []
-        for n in range(len(crv)):
-            if beta[n] < threshold:
-                continue
-            parts.append(f"{float(crv[n]):.4g}: {beta[n]:.3f}")
-        lines.append(f"  {{{', '.join(parts)}}}")
+        blocks = self.consequent_slices
+        for o, block in enumerate(blocks):
+            parts = []
+            for n in range(block.start, block.stop):
+                if beta[n] < threshold:
+                    continue
+                parts.append(f"{float(crv[n]):.4g}: {beta[n]:.3f}")
+            prefix = "  " if len(blocks) == 1 else f"  y{o + 1}: "
+            lines.append(f"{prefix}{{{', '.join(parts)}}}")
 
         return "\n".join(lines)
 

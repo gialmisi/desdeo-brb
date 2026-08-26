@@ -5,7 +5,7 @@ input transformation, activation weight computation, belief combination, and
 output aggregation. All functions are vectorized over samples.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -141,7 +141,48 @@ def compute_activation_weights(
     return unnorm / denom
 
 
-def compute_combined_belief_degrees(bre_matrix: np.ndarray, weights: np.ndarray) -> np.ndarray:
+def _blocks(n_columns: int, group_sizes: tuple[int, ...] | None) -> list[slice]:
+    """Return the column range of each output within a concatenated array."""
+    if group_sizes is None:
+        return [slice(0, n_columns)]
+    out, start = [], 0
+    for size in group_sizes:
+        out.append(slice(start, start + size))
+        start += size
+    return out
+
+
+def _utilities_per_block(
+    consequents: np.ndarray,
+    blocks: list[slice],
+    utility_fn: Callable[[np.ndarray], np.ndarray]
+    | Sequence[Callable[[np.ndarray], np.ndarray] | None]
+    | None,
+) -> list[np.ndarray]:
+    """Apply the utility of each output to that output's referential values.
+
+    A single callable is applied to every output; a sequence gives one callable
+    per output, where ``None`` leaves that output's values alone.
+    """
+    if utility_fn is None:
+        return [consequents[b] for b in blocks]
+    if callable(utility_fn):
+        return [np.asarray(utility_fn(consequents[b]), dtype=float) for b in blocks]
+    if len(utility_fn) != len(blocks):
+        raise ValueError(
+            f"expected {len(blocks)} utility functions, one per output, got {len(utility_fn)}"
+        )
+    return [
+        consequents[b] if fn is None else np.asarray(fn(consequents[b]), dtype=float)
+        for fn, b in zip(utility_fn, blocks, strict=True)
+    ]
+
+
+def compute_combined_belief_degrees(
+    bre_matrix: np.ndarray,
+    weights: np.ndarray,
+    group_sizes: tuple[int, ...] | None = None,
+) -> np.ndarray:
     """Combine activated belief degrees using the analytical evidential reasoning algorithm.
 
     Implements Eq. A-15 from Chen et al. (2011) / Eq. 3.20 from the thesis.
@@ -151,10 +192,13 @@ def compute_combined_belief_degrees(bre_matrix: np.ndarray, weights: np.ndarray)
             the belief degrees assigned to each consequent for every rule.
         weights: 2-D array of shape ``(n_samples, n_rules)`` with activation
             weights from :func:`compute_activation_weights`.
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output. With several outputs the grades are
+            concatenated along the last axis and delimited by these sizes.
 
     Returns:
         2-D array of shape ``(n_samples, n_consequents)`` with the combined
-        belief degrees.
+        belief degrees, in the same concatenated layout as ``bre_matrix``.
 
     Notes:
         Products over rules are computed in log-space for numerical stability.
@@ -175,6 +219,16 @@ def compute_combined_belief_degrees(bre_matrix: np.ndarray, weights: np.ndarray)
                 - \\prod_k (1 - w_k)
             }
     """
+    if group_sizes is not None and len(group_sizes) > 1:
+        # Each output is an independent evidential reasoning problem over the
+        # same activated rules, so combine the blocks one at a time and put the
+        # results back in the same concatenated layout.
+        blocks = _blocks(bre_matrix.shape[1], group_sizes)
+        return np.concatenate(
+            [compute_combined_belief_degrees(bre_matrix[:, b], weights) for b in blocks],
+            axis=1,
+        )
+
     n_rules, n_consequents = bre_matrix.shape
 
     # Row sums of BRE matrix: sum_j beta_{j,k} for each rule
@@ -242,7 +296,10 @@ def compute_combined_belief_degrees(bre_matrix: np.ndarray, weights: np.ndarray)
 def compute_utility_bounds(
     belief_degrees: np.ndarray,
     consequents: np.ndarray,
-    utility_fn: Callable[[np.ndarray], np.ndarray] | None = None,
+    utility_fn: Callable[[np.ndarray], np.ndarray]
+    | Sequence[Callable[[np.ndarray], np.ndarray] | None]
+    | None = None,
+    group_sizes: tuple[int, ...] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Bound the scalar output when the combined assessment is incomplete.
 
@@ -253,36 +310,63 @@ def compute_utility_bounds(
 
     When the assessment is complete the two bounds coincide with each other and
     with `compute_output`, so nothing changes for a complete rule base.
+    Otherwise `compute_output` returns the midpoint of this interval, so the
+    lower bound never exceeds it and the upper bound is never below it.
 
     Args:
         belief_degrees: Shape ``(n_samples, n_consequents)`` with combined
             belief degrees, which may sum to less than one.
         consequents: 1-D array of consequent referential values.
         utility_fn: Optional function mapping consequent values to utilities.
+            With several outputs, either one callable applied to every output
+            or a sequence giving one per output, where ``None`` leaves that
+            output's values alone.
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output. With several outputs the grades are
+            concatenated along the last axis and delimited by these sizes.
 
     Returns:
-        Two 1-D arrays of shape ``(n_samples,)``, the lower and upper bound.
+        The lower and upper bound, each of shape ``(n_samples,)`` for a single
+        output and ``(n_samples, n_outputs)`` otherwise.
     """
-    u = utility_fn(consequents) if utility_fn is not None else consequents
-    assigned = belief_degrees @ u
-    unassigned = np.clip(1.0 - belief_degrees.sum(axis=1), 0.0, 1.0)
-    return assigned + unassigned * u.min(), assigned + unassigned * u.max()
+    blocks = _blocks(belief_degrees.shape[1], group_sizes)
+    utilities = _utilities_per_block(consequents, blocks, utility_fn)
+
+    lower, upper = [], []
+    for block, u in zip(blocks, utilities, strict=True):
+        beliefs = belief_degrees[:, block]
+        assigned = beliefs @ u
+        unassigned = np.clip(1.0 - beliefs.sum(axis=1), 0.0, 1.0)
+        lower.append(assigned + unassigned * u.min())
+        upper.append(assigned + unassigned * u.max())
+
+    if len(blocks) == 1:
+        return lower[0], upper[0]
+    return np.stack(lower, axis=1), np.stack(upper, axis=1)
 
 
 def compute_output(
     belief_degrees: np.ndarray,
     consequents: np.ndarray,
-    utility_fn: Callable[[np.ndarray], np.ndarray] | None = None,
+    utility_fn: Callable[[np.ndarray], np.ndarray]
+    | Sequence[Callable[[np.ndarray], np.ndarray] | None]
+    | None = None,
+    group_sizes: tuple[int, ...] | None = None,
 ) -> np.ndarray:
     """Compute scalar outputs from combined belief degrees and consequent values.
 
     Applies a utility function to the consequent referential values, then
-    computes the weighted sum with the combined belief degrees.
+    combines them with the belief degrees.
 
-    Belief left unassigned contributes nothing, so for an incomplete assessment
-    this is the lower bound of `compute_utility_bounds` whenever the least
-    preferred grade has zero utility. Use that function when the width of the
-    interval matters.
+    Returns the average expected utility of Yang and Xu (2002), Section II-H,
+    which is the midpoint of `compute_utility_bounds`. Their expected utility,
+    Eq. (28), is defined only when every assessment is complete, so it cannot be
+    used on its own here. Belief left unassigned belongs to some grade even
+    though we do not know which, and the midpoint is the point estimate that
+    treats the least and most preferred grades alike.
+
+    When the assessment is complete the bounds coincide and this reduces to the
+    plain weighted sum, so nothing changes for a complete rule base.
 
     Args:
         belief_degrees: 2-D array of shape ``(n_samples, n_consequents)``
@@ -291,14 +375,27 @@ def compute_output(
             consequent referential values.
         utility_fn: Optional function mapping consequent values to utilities.
             Signature: ``f(np.ndarray) -> np.ndarray``. If ``None``, the
-            identity function is used (i.e., ``u(D_n) = D_n``).
+            identity function is used (i.e., ``u(D_n) = D_n``). With several
+            outputs, either one callable applied to every output or a sequence
+            giving one per output, where ``None`` leaves that output alone.
+        group_sizes: Number of consequent grades belonging to each output, or
+            ``None`` for a single output. With several outputs the grades are
+            concatenated along the last axis and delimited by these sizes.
 
     Returns:
-        1-D array of shape ``(n_samples,)`` with the scalar outputs.
+        Shape ``(n_samples,)`` for a single output, ``(n_samples, n_outputs)``
+        otherwise.
     """
-    if utility_fn is not None:
-        u = utility_fn(consequents)
-    else:
-        u = consequents
+    blocks = _blocks(belief_degrees.shape[1], group_sizes)
+    utilities = _utilities_per_block(consequents, blocks, utility_fn)
 
-    return belief_degrees @ u
+    outputs = []
+    for block, u in zip(blocks, utilities, strict=True):
+        beliefs = belief_degrees[:, block]
+        assigned = beliefs @ u
+        unassigned = np.clip(1.0 - beliefs.sum(axis=1), 0.0, 1.0)
+        outputs.append(assigned + unassigned * 0.5 * (u.min() + u.max()))
+
+    if len(blocks) == 1:
+        return outputs[0]
+    return np.stack(outputs, axis=1)

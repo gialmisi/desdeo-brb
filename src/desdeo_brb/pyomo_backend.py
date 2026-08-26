@@ -107,6 +107,12 @@ def build_pyomo_brb_model(
     rule_antecedent_indices = np.asarray(rb.rule_antecedent_indices)
     ref_value_lengths = [len(rv) for rv in rb.precedent_referential_values]
     consequent_rv = np.asarray(rb.consequent_referential_values)
+    allow_incomplete = getattr(brb_model, "_allow_incomplete", False)
+    consequent_blocks = rb.consequent_slices
+    consequent_group_sizes = rb.consequent_group_sizes
+    # Pyomo builds a symbolic expression, so an arbitrary Python utility has to
+    # be applied to the referential values up front, exactly as for JAX.
+    consequent_u = np.asarray(brb_model._consequent_utilities(), dtype=float)
 
     m = pyo.ConcreteModel("BRB_MSE")
 
@@ -177,12 +183,20 @@ def build_pyomo_brb_model(
 
     boundary_mask = brb_model._boundary_rule_mask() if fix_endpoint_beliefs else None
 
-    def _bd_sum_rule(_m, k):
+    # One constraint per rule per output: what a rule believes about one
+    # objective places no constraint on what it believes about another.
+    m.OUTPUTS = pyo.RangeSet(0, len(consequent_blocks) - 1)
+
+    def _bd_sum_rule(_m, k, o):
         if boundary_mask is not None and boundary_mask[k]:
             return pyo.Constraint.Skip
-        return sum(_m.beta[k, n] for n in _m.CONSEQUENTS) == 1.0
+        block = consequent_blocks[o]
+        total = sum(_m.beta[k, n] for n in range(block.start, block.stop))
+        if allow_incomplete:
+            return total <= 1.0
+        return total == 1.0
 
-    m.bd_sum = pyo.Constraint(m.RULES, rule=_bd_sum_rule)
+    m.bd_sum = pyo.Constraint(m.RULES, m.OUTPUTS, rule=_bd_sum_rule)
 
     if normalize_rule_weights:
 
@@ -299,50 +313,73 @@ def build_pyomo_brb_model(
 
     # Combined belief degrees beta_combined[s, n] (Eq. A-15)
 
-    # beta_sum[k] = sum_n(beta[k, n])
-    beta_sum: dict = {}
-    for k in range(n_rules):
-        beta_sum[k] = sum(m.beta[k, n] for n in m.CONSEQUENTS)
-
+    # Each output is its own evidential reasoning problem over the same
+    # activated rules, so the whole expression below is built per block.
     eps_combined = 1e-12
     y_pred: dict = {}
 
     for s in range(n_samples):
-        # prod_term[n] = prod_k(w[k] * beta[k, n] + 1 - w[k] * beta_sum[k])
-        prod_terms_per_n = []
-        for n in range(n_consequents):
-            terms = [
-                w[(s, k)] * m.beta[k, n] + 1.0 - w[(s, k)] * beta_sum[k] for k in range(n_rules)
-            ]
-            prod_terms_per_n.append(reduce(operator.mul, terms))
-
-        # right_prod = prod_k(1 - w[k] * beta_sum[k])
-        right_prod_terms = [1.0 - w[(s, k)] * beta_sum[k] for k in range(n_rules)]
-        right_prod = reduce(operator.mul, right_prod_terms)
-
-        # prod_one_minus_w = prod_k(1 - w[k])
+        # prod_one_minus_w = prod_k(1 - w[k]), shared across outputs
         one_minus_w_terms = [1.0 - w[(s, k)] for k in range(n_rules)]
         prod_one_minus_w = reduce(operator.mul, one_minus_w_terms)
 
-        # beta_combined[n] = (prod_term[n] - right_prod) / denom
-        denom = (
-            sum(prod_terms_per_n)
-            - (n_consequents - 1) * right_prod
-            - prod_one_minus_w
-            + eps_combined
-        )
+        for o, block in enumerate(consequent_blocks):
+            grades = range(block.start, block.stop)
+            n_grades = block.stop - block.start
 
-        # y_pred[s] = sum_n(D[n] * beta_combined[s, n])
-        y_pred[s] = sum(
-            float(consequent_rv[n]) * (prod_terms_per_n[n] - right_prod) / denom
-            for n in range(n_consequents)
-        )
+            # beta_sum[k] = sum over this output's grades only
+            beta_sum = {k: sum(m.beta[k, n] for n in grades) for k in range(n_rules)}
+
+            # prod_term[n] = prod_k(w[k] * beta[k, n] + 1 - w[k] * beta_sum[k])
+            prod_terms_per_n = []
+            for n in grades:
+                terms = [
+                    w[(s, k)] * m.beta[k, n] + 1.0 - w[(s, k)] * beta_sum[k] for k in range(n_rules)
+                ]
+                prod_terms_per_n.append(reduce(operator.mul, terms))
+
+            # right_prod = prod_k(1 - w[k] * beta_sum[k])
+            right_prod_terms = [1.0 - w[(s, k)] * beta_sum[k] for k in range(n_rules)]
+            right_prod = reduce(operator.mul, right_prod_terms)
+
+            # beta_combined[n] = (prod_term[n] - right_prod) / denom
+            denom = (
+                sum(prod_terms_per_n)
+                - (n_grades - 1) * right_prod
+                - prod_one_minus_w
+                + eps_combined
+            )
+
+            # sum_n(u[n] * beta_combined[s, n]), plus the average expected
+            # utility of whatever belief the combination leaves unassigned.
+            # This mirrors inference.compute_output, so the objective optimises
+            # the same quantity that predict returns.
+            block_u = consequent_u[block]
+            assigned = sum(
+                float(block_u[i]) * (prod_terms_per_n[i] - right_prod) / denom
+                for i in range(n_grades)
+            )
+            if allow_incomplete:
+                total = sum((prod_terms_per_n[i] - right_prod) / denom for i in range(n_grades))
+                midpoint = 0.5 * (float(block_u.min()) + float(block_u.max()))
+                y_pred[(s, o)] = assigned + (1.0 - total) * midpoint
+            else:
+                y_pred[(s, o)] = assigned
 
     # Objective: MSE
 
+    # Mean squared error over every sample and every output, each output's
+    # residual divided by the span of its own grades so that an objective with
+    # wider units does not dominate the fit. Matches BRBModel._output_scales.
+    y_target = np.asarray(y_train, dtype=float).reshape(n_samples, len(consequent_blocks))
+    n_terms = n_samples * len(consequent_blocks)
+    scales = np.asarray(brb_model._output_scales(), dtype=float)
+
     def _obj_rule(_m):
-        return (1.0 / n_samples) * sum(
-            (y_pred[s] - float(y_train[s])) ** 2 for s in range(n_samples)
+        return (1.0 / n_terms) * sum(
+            ((y_pred[(s, o)] - float(y_target[s, o])) / float(scales[o])) ** 2
+            for s in range(n_samples)
+            for o in range(len(consequent_blocks))
         )
 
     m.obj = pyo.Objective(rule=_obj_rule, sense=pyo.minimize)
@@ -354,5 +391,6 @@ def build_pyomo_brb_model(
     m._brb_ref_value_lengths = ref_value_lengths
     m._brb_rule_antecedent_indices = rule_antecedent_indices
     m._brb_consequent_referential_values = consequent_rv
+    m._brb_consequent_group_sizes = consequent_group_sizes
 
     return m

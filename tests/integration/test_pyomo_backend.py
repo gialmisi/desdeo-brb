@@ -311,3 +311,123 @@ def test_pyomo_multi_attribute_builds():
     solver = pyo.SolverFactory("ipopt")
     result = solver.solve(m, tee=False)
     assert str(result.solver.termination_condition) == "optimal"
+
+
+# Multi-output and incomplete rule bases through the Pyomo objective.
+#
+# The tests above are all single-output with complete rules. These cover the
+# paths added when the completeness constraint was relaxed and consequents
+# gained an output axis: the objective is built symbolically and separately
+# from the NumPy one, so the two agreeing is the thing worth checking.
+
+FIRST_OUT = np.array([0.0, 0.5, 1.0])
+SECOND_OUT = np.array([100.0, 250.0, 400.0])
+BOTH_OUT = [FIRST_OUT, SECOND_OUT]
+
+
+def _two_output_data(n=8):
+    X = np.linspace(0.0, 1.0, n).reshape(-1, 1)
+    shape = X[:, 0] ** 2
+    return X, np.column_stack([shape, 100.0 + 300.0 * shape])
+
+
+def test_pyomo_objective_matches_numpy_multi_output():
+    """The symbolic objective must equal the NumPy loss at the same parameters.
+
+    This covers the per-output evidential reasoning combination and the
+    per-output scaling together: both are rebuilt independently in Pyomo.
+    """
+    X, y = _two_output_data()
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT)
+
+    numpy_mse = -model.score(X, y)
+    m = build_pyomo_brb_model(model, X, y, optimize_referential_values=False)
+
+    np.testing.assert_allclose(float(pyo.value(m.obj)), numpy_mse, rtol=1e-6)
+
+
+def test_pyomo_objective_matches_numpy_when_unscaled():
+    """Turning the scaling off must turn it off on both sides alike."""
+    X, y = _two_output_data()
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT)
+    model._scale_outputs = False
+
+    numpy_mse = -model.score(X, y)
+    m = build_pyomo_brb_model(model, X, y, optimize_referential_values=False)
+
+    np.testing.assert_allclose(float(pyo.value(m.obj)), numpy_mse, rtol=1e-6)
+    # The two scalings genuinely differ, so the agreement above means something.
+    model._scale_outputs = True
+    assert not np.isclose(-model.score(X, y), numpy_mse, rtol=1e-3)
+
+
+def test_pyomo_objective_matches_numpy_with_a_utility_function():
+    """Pyomo consumes utilities computed up front, as the JAX path does."""
+    X, y = _two_output_data()
+    y = np.column_stack([2.0 * y[:, 0] + 7.0, 2.0 * y[:, 1] + 7.0])
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT, utility_fn=lambda d: 2.0 * d + 7.0)
+
+    numpy_mse = -model.score(X, y)
+    m = build_pyomo_brb_model(model, X, y, optimize_referential_values=False)
+
+    np.testing.assert_allclose(float(pyo.value(m.obj)), numpy_mse, rtol=1e-6)
+
+
+def test_pyomo_constrains_every_output_block():
+    """One sum constraint per rule per output, not one per rule."""
+    X, y = _two_output_data()
+
+    single = build_pyomo_brb_model(BRBModel([np.linspace(0.0, 1.0, 3)], FIRST_OUT), X, y[:, 0])
+    both = build_pyomo_brb_model(BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT), X, y)
+
+    assert len(list(both.bd_sum)) == 2 * len(list(single.bd_sum))
+
+
+def test_ipopt_trains_a_multi_output_rule_base():
+    """A real solve leaves every output's block summing to one."""
+    X, y = _two_output_data()
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT)
+
+    model.fit(X, y, fix_endpoints=True, method="ipopt")
+
+    np.testing.assert_allclose(model.rule_base.block_sums, 1.0, atol=1e-5)
+    # Both outputs are fitted, not just the one with the wider units.
+    spans = np.array([1.0, 300.0])
+    relative = np.sqrt(np.mean(((y - model.predict_values(X)) / spans) ** 2, axis=0))
+    assert relative.max() < 0.2, relative
+
+
+def test_ipopt_allows_incomplete_rules():
+    """With the cap in place a solve may leave belief unassigned."""
+    X, y = _two_output_data()
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT)
+
+    model.fit(X, y, fix_endpoints=True, method="ipopt", allow_incomplete=True)
+
+    block_sums = model.rule_base.block_sums
+    assert np.all(block_sums <= 1.0 + 1e-5)
+    assert np.all(model.rule_base.belief_degrees >= -1e-6)
+
+
+def test_ipopt_keeps_rules_complete_by_default():
+    """The relaxation is opt-in; the default solve still returns equalities."""
+    X, y = _two_output_data()
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT)
+
+    model.fit(X, y, fix_endpoints=True, method="ipopt")
+
+    assert model.rule_base.is_complete
+
+
+def test_update_from_pyomo_keeps_the_output_layout():
+    """Extraction must carry the group sizes back, not flatten them away."""
+    X, y = _two_output_data()
+    model = BRBModel([np.linspace(0.0, 1.0, 3)], BOTH_OUT)
+
+    m = build_pyomo_brb_model(model, X, y, optimize_referential_values=False)
+    pyo.SolverFactory("ipopt").solve(m, tee=False)
+    model.update_from_pyomo(m)
+
+    assert model.rule_base.n_outputs == 2
+    assert model.rule_base.consequent_group_sizes == (3, 3)
+    assert model.predict_values(X).shape == (len(X), 2)
