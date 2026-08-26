@@ -1,9 +1,12 @@
 # Training
 
-BRB training minimises mean-squared error subject to several equality
-constraints: belief-degree rows sum to 1, rule weights sum to 1, attribute
-weights are non-negative, and referential values stay sorted. The loss
-landscape is non-convex with many local minima.
+BRB training minimises mean-squared error subject to several constraints:
+each rule's belief degrees sum to 1 for every output, rule weights sum to 1,
+attribute weights are non-negative, and referential values stay sorted. The
+loss landscape is non-convex with many local minima.
+
+The belief sum is an equality only when the trained rule base is meant to come
+out complete. See [Incomplete rules](#incomplete-rules) for relaxing it.
 
 ## Training methods
 
@@ -73,6 +76,72 @@ model.fit(X, y, method="DE+SLSQP",
 model.fit(X, y, method="ipopt",
           optimizer_options={"max_iter": 5000, "tol": 1e-9})
 ```
+
+## Incomplete rules
+
+RIMER requires only that a rule's belief degrees sum to *at most* one
+[@YangEtAl2006]. A shortfall is the rule's ignorance about its consequent,
+and the evidential reasoning combination carries it through to the result.
+Yang et al. impose the sum-to-one equality only when a complete trained rule
+base is wanted; otherwise the sum is capped at one [@YangEtAl2007].
+
+`allow_incomplete` controls which of the two applies:
+
+```python
+# Rules may leave belief unassigned
+model.fit(X, y, allow_incomplete=True)
+```
+
+The default, `None`, follows the rule base being trained. A rule base that
+arrives incomplete keeps that freedom, so training does not silently discard
+ignorance an expert deliberately expressed; one that arrives complete stays
+complete, so it gains no ignorance nobody asked for. Pass `True` or `False`
+to override.
+
+Two things follow from allowing it:
+
+- The prediction becomes the *average expected utility* of the utility
+  interval [@YangXu2002], not a plain weighted sum. `InferenceResult` exposes
+  the interval as `utility_bounds` and the unassigned mass as `ignorance`.
+- Ignorance becomes a free parameter. Since total ignorance predicts the
+  midpoint of the utility range, declining to commit only lowers the loss for
+  a model already worse than predicting the mean, so it is a weak attractor
+  rather than a shortcut.
+
+A rule base that arrives complete is seeded with a small starting ignorance,
+because the gradient of the loss with respect to the underlying parameters
+scales with the ignorance itself and a smaller seed would leave the optimiser
+with nothing to follow.
+
+## Several outputs
+
+A rule base can predict more than one consequent attribute. Pass a list of
+referential value arrays, one per output, and give `fit` a target of shape
+`(n_samples, n_outputs)`:
+
+```python
+model = BRBModel(prv, [np.array([0.0, 0.5, 1.0]),
+                       np.array([100.0, 250.0, 400.0])])
+model.fit(X, y)          # y has shape (n_samples, 2)
+```
+
+Each output keeps its own grades, because objectives generally have their own
+scales and units. The activation weights depend only on the antecedents, so
+they are computed once and the evidential reasoning combination runs once per
+output: what a rule believes about one objective places no constraint on what
+it believes about another. Completeness and ignorance are likewise per rule
+per output.
+
+By default each output's residual is divided by the span of that output's own
+grades before squaring, so an objective measured in hundreds does not crowd
+out one measured in tenths. Pass `scale_outputs=False` to sum the raw squared
+errors instead.
+
+This is a fixed weighting taken from the rule base. Yang et al. instead
+normalise each objective between its own ideal and its worst value in a
+payoff table and minimise the largest scaled error, which yields an efficient
+solution at the cost of one extra training run per output
+[@YangEtAl2007].
 
 ## Custom loss functions
 

@@ -72,7 +72,7 @@ def build_pyomo_brb_model(
     fix_endpoint_beliefs: bool = False,
     normalize_rule_weights: bool = True,
     optimize_referential_values: bool = True,
-):
+) -> pyo.ConcreteModel:
     """Build a Pyomo ConcreteModel encoding the BRB MSE objective.
 
     Args:
@@ -93,8 +93,8 @@ def build_pyomo_brb_model(
             referential values are decision variables.
 
     Returns:
-        A ``pyo.ConcreteModel`` with bounded variables, structural
-        constraints, and an MSE objective.
+        A model with bounded variables, structural constraints, and an MSE
+        objective.
     """
     _check_pyomo()
 

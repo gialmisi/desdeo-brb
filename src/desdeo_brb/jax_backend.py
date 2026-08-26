@@ -353,9 +353,17 @@ def full_inference_jax_unconstrained(
     constraints.
 
     Args:
-        Same as :func:`full_inference_jax`, except ``flat_params`` is in
-        unconstrained space (logits for belief degrees/rule weights,
-        unconstrained reals for attribute weights).
+        flat_params: 1-D parameter vector in unconstrained space: logits for
+            belief degrees and rule weights, unconstrained reals for attribute
+            weights, and referential values sorted on the way through.
+        X: Input array ``(n_samples, n_attributes)``.
+        consequent_rv: Consequent referential values ``(n_consequents,)``.
+        rule_antecedent_indices: Integer array ``(n_rules, n_attributes)``.
+        n_rules: Number of rules (static).
+        n_consequents: Number of consequent values (static).
+        n_attributes: Number of attributes (static).
+        rv_lengths: Tuple of Python ints with referential value lengths
+            per attribute (static — required for JIT tracing).
         allow_incomplete: If True, belief rows are free to sum to less than
             one, with the shortfall being the rule's ignorance.
         normalize_rule_weights: If True, apply softmax to rule weights
