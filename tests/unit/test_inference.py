@@ -433,3 +433,36 @@ def test_extended_matches_conventional_at_referential_points():
     conventional = compute_activation_weights(alphas, indices, thetas, deltas)
     extended = compute_extended_activation_weights(alphas, one_hot, thetas, deltas)
     assert_allclose(extended, conventional, atol=1e-12)
+
+
+def test_incomplete_antecedents_would_match_everything_better():
+    """Why RuleBase refuses an antecedent that does not sum to one.
+
+    Matching halves the squared distance so two disjoint distributions are
+    exactly one apart, which holds only when both sum to one. Give a rule less
+    mass and it moves closer to every input. This pins that behaviour so the
+    reason for the refusal cannot quietly stop being true.
+    """
+    from desdeo_brb.inference import compute_extended_activation_weights
+
+    points = [np.array([0.0, 1.0, 2.0])]
+    alphas = input_transform(np.array([[0.5], [1.5]]), points)
+
+    def similarity(mass):
+        antecedent = [np.array([[mass, 0.0, 0.0]])]
+        weights = compute_extended_activation_weights(
+            alphas, antecedent, np.array([1.0]), np.ones((1, 1))
+        )
+        difference = alphas[0][:, None, :] - antecedent[0][None, :, :]
+        distance = np.sqrt((difference**2).sum(axis=2) / 2.0)
+        assert weights.shape == (2, 1)
+        return 1.0 - distance[:, 0]
+
+    complete = similarity(1.0)
+    starved = similarity(0.6)
+    empty = similarity(0.0)
+
+    # A rule less sure of itself matches better at both inputs, and one saying
+    # nothing beats a complete rule at the input the complete rule is far from.
+    assert np.all(starved > complete)
+    assert empty[1] > complete[1]

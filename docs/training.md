@@ -8,11 +8,8 @@ loss landscape is non-convex with many local minima.
 The belief sum is an equality only when the trained rule base is meant to come
 out complete. See [Incomplete rules](#incomplete-rules) for relaxing it.
 
-Training applies to conventional rule bases, those built with
-`rule_antecedent_indices`. A rule base with
-[extended antecedents](#extended-antecedents) is refused: its antecedents are
-belief distributions rather than indices, and the training paths gather an
-index per attribute.
+A rule base with [extended antecedents](#extended-antecedents) trains on the
+NumPy backend with its referential values held fixed. See that section for why.
 
 ## Training methods
 
@@ -172,17 +169,27 @@ enforced.
 ## Extended antecedents
 
 An extended rule base carries `antecedent_beliefs`, a belief distribution over
-each attribute's referential values, in place of `rule_antecedent_indices`. Its
+each attribute's referential values summing to one, in place of
+`rule_antecedent_indices`. Its
 rules are normally read off data, one per sample, rather than enumerated over
 the Cartesian product of referential values.
 
-`fit()` raises `NotImplementedError` for such a rule base. Inference works
-normally on the NumPy backend.
+Such a rule base trains on the NumPy backend. Belief degrees, rule weights and
+attribute weights are adjusted as usual, and the referential values are pinned
+to the values they already hold.
 
-What training one would involve, if it is added: with the antecedent
-distributions and the referential values held fixed, the similarity between an
+They are pinned because the antecedent distributions were computed against
+them. Moving a referential value would silently invalidate every rule that
+refers to it, and correcting for that would mean regenerating the antecedents
+from the data they came from, which a rule base does not keep.
+
+With the antecedents and the referential values fixed, the similarity between an
 input and a rule is constant with respect to every trainable parameter, exactly
 as the gathered matching degree is in the conventional form. The optimisation
-problem therefore keeps its shape and only the constant changes. Making the
-referential values trainable is harder, because the antecedent distributions
-were computed from them and go stale when they move.
+problem therefore keeps its shape.
+
+Two things are refused rather than approximated. `method="ipopt"` and
+`backend="jax"` both gather one referential index per attribute, which an
+extended rule base does not have. And `fix_endpoint_beliefs` has no meaning
+here, since no rule sits on a referential value, so none of them is a boundary
+rule.

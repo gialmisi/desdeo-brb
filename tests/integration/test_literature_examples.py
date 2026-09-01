@@ -429,3 +429,142 @@ def test_extended_rule_base_recovers_its_own_training_points():
     )
     predicted = np.asarray(model.predict(X).combined_belief_degrees).argmax(axis=1)
     assert (predicted == y).mean() == 1.0
+
+
+# Training an extended rule base (stage 1: antecedents and referentials frozen)
+
+
+def _extended_pair(points, indices, beliefs):
+    """Return a conventional rule base and the extended base describing it."""
+    n_rules = len(indices)
+    n_attributes = len(points)
+    common = {
+        "precedent_referential_values": [p.copy() for p in points],
+        "consequent_referential_values": np.array([0.0, 1.0]),
+        "belief_degrees": beliefs.copy(),
+        "rule_weights": np.full(n_rules, 1.0 / n_rules),
+        "attribute_weights": np.ones((n_rules, n_attributes)),
+    }
+    conventional = RuleBase(**common, rule_antecedent_indices=indices)
+    one_hot = [np.eye(len(points[i]))[indices[:, i]] for i in range(n_attributes)]
+    extended = RuleBase(**common, antecedent_beliefs=one_hot)
+    return conventional, extended
+
+
+def test_training_an_extended_rule_base_reduces_error():
+    """Belief degrees and weights still train when antecedents are distributions."""
+    generator = np.random.default_rng(0)
+    X = generator.random((60, 2))
+    y = X[:, 0] ** 2 + 0.5 * X[:, 1]
+    points = [np.linspace(0.0, 1.0, 4), np.linspace(0.0, 1.0, 4)]
+    grades = np.array([0.0, 0.5, 1.0, 1.5])
+
+    rule_base = RuleBase(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=grades.copy(),
+        belief_degrees=np.full((12, 4), 0.25),
+        rule_weights=np.full(12, 1.0 / 12),
+        attribute_weights=np.ones((12, 2)),
+        antecedent_beliefs=[a.copy() for a in input_transform(X[:12], points)],
+    )
+    model = BRBModel(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=grades.copy(),
+        rule_base=rule_base,
+    )
+    before = float(np.mean((model.predict_values(X).ravel() - y) ** 2))
+    model.fit(X, y, method="SLSQP")
+    after = float(np.mean((model.predict_values(X).ravel() - y) ** 2))
+
+    assert after < before
+    assert model.rule_base.is_extended
+
+
+def test_training_leaves_extended_referential_values_where_they_were():
+    """They are pinned: the antecedents were computed against them."""
+    generator = np.random.default_rng(1)
+    X = generator.random((40, 2))
+    y = X.sum(axis=1)
+    points = [np.linspace(0.0, 1.0, 4), np.linspace(0.0, 1.0, 4)]
+    grades = np.array([0.0, 1.0, 2.0])
+
+    rule_base = RuleBase(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=grades.copy(),
+        belief_degrees=np.full((10, 3), 1.0 / 3),
+        rule_weights=np.full(10, 0.1),
+        attribute_weights=np.ones((10, 2)),
+        antecedent_beliefs=[a.copy() for a in input_transform(X[:10], points)],
+    )
+    model = BRBModel(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=grades.copy(),
+        rule_base=rule_base,
+    )
+    model.fit(X, y, method="SLSQP")
+
+    for original, trained in zip(
+        points, model.rule_base.precedent_referential_values, strict=True
+    ):
+        assert_allclose(trained, original)
+
+
+def test_trained_extended_matches_trained_conventional_on_referential_points():
+    """With two referential values per attribute, both forms pin everything.
+
+    Every referential value is then an endpoint, so ``fix_endpoints`` freezes
+    the conventional base exactly as an extended base is always frozen, and the
+    two describe the same model on data that sits on referential values. They
+    must therefore train to the same predictions.
+    """
+    points = [np.array([0.0, 1.0]), np.array([0.0, 1.0])]
+    indices = build_rule_antecedent_indices(points)
+    beliefs = np.tile(np.array([0.5, 0.5]), (len(indices), 1))
+    conventional, extended = _extended_pair(points, indices, beliefs)
+
+    X = np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]] * 4, dtype=float)
+    y = X[:, 0] * 0.5 + X[:, 1] * 0.5
+
+    trained = []
+    for rule_base in (conventional, extended):
+        model = BRBModel(
+            precedent_referential_values=[p.copy() for p in points],
+            consequent_referential_values=np.array([0.0, 1.0]),
+            rule_base=rule_base,
+        )
+        model.fit(X, y, method="SLSQP", fix_endpoints=True)
+        trained.append(np.asarray(model.predict_values(X)).ravel())
+
+    assert_allclose(trained[0], trained[1], atol=1e-6)
+
+
+def test_fix_endpoint_beliefs_is_refused_for_an_extended_rule_base():
+    """No rule sits on a referential value, so no rule is a boundary rule."""
+    points = [np.array([0.0, 1.0]), np.array([0.0, 1.0])]
+    indices = build_rule_antecedent_indices(points)
+    beliefs = np.tile(np.array([0.5, 0.5]), (len(indices), 1))
+    _, extended = _extended_pair(points, indices, beliefs)
+    model = BRBModel(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=np.array([0.0, 1.0]),
+        rule_base=extended,
+    )
+    X = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=float)
+    with pytest.raises(NotImplementedError, match="boundary rule"):
+        model.fit(X, np.array([0.0, 1.0]), fix_endpoint_beliefs=True)
+
+
+def test_ipopt_refuses_an_extended_rule_base():
+    """The Pyomo model gathers an index the rule base does not have."""
+    points = [np.array([0.0, 1.0]), np.array([0.0, 1.0])]
+    indices = build_rule_antecedent_indices(points)
+    beliefs = np.tile(np.array([0.5, 0.5]), (len(indices), 1))
+    _, extended = _extended_pair(points, indices, beliefs)
+    model = BRBModel(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=np.array([0.0, 1.0]),
+        rule_base=extended,
+    )
+    X = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=float)
+    with pytest.raises(NotImplementedError, match="NumPy backend only"):
+        model.fit(X, np.array([0.0, 1.0]), method="ipopt")

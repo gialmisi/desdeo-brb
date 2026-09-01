@@ -521,13 +521,13 @@ class BRBModel:
         Returns:
             self
         """
-        # Training gathers one referential value per attribute, which an
-        # extended rule base does not have. Refuse rather than train a model
-        # the caller did not build.
-        if self.rule_base.is_extended:
+        # The JAX and Pyomo paths gather one referential value per attribute,
+        # which an extended rule base does not have.
+        if self.rule_base.is_extended and (self._backend == "jax" or method == "ipopt"):
             raise NotImplementedError(
-                "Training an extended rule base is not supported yet; its antecedents "
-                "are belief distributions rather than indices."
+                "Training an extended rule base is supported on the NumPy backend only, "
+                f"and not with method='ipopt'; got backend={self._backend!r}, "
+                f"method={method!r}."
             )
         # Validate method against backend
         if self._backend == "numpy":
@@ -1710,6 +1710,12 @@ class BRBModel:
         whose antecedents include a boundary (first or last) referential value
         for any attribute."""
         rb = self.rule_base
+        if rb.is_extended:
+            raise NotImplementedError(
+                "fix_endpoint_beliefs has no meaning for an extended rule base: its "
+                "rules carry belief distributions rather than sitting on referential "
+                "values, so none of them is a boundary rule."
+            )
         mask = np.zeros(rb.n_rules, dtype=bool)
         for i in range(rb.n_attributes):
             max_idx = len(rb.precedent_referential_values[i]) - 1
@@ -1748,10 +1754,18 @@ class BRBModel:
         bounds.extend([(0.0, 10.0)] * (n_rules * n_attributes))
 
         # precedent referential values
+        #
+        # An extended rule base pins all of them. Its antecedent belief
+        # distributions were computed against these values, so moving a
+        # referential value silently invalidates every rule that refers to it.
+        # Training one alongside the other would need the antecedents
+        # regenerated from the data they came from, which a rule base does not
+        # keep.
+        pin_all = rb.is_extended
         for rv in rb.precedent_referential_values:
             for j in range(len(rv)):
-                if fix_endpoints and (j == 0 or j == len(rv) - 1):
-                    # Fix endpoint: bound to current value
+                if pin_all or (fix_endpoints and (j == 0 or j == len(rv) - 1)):
+                    # Fix: bound to current value
                     bounds.append((rv[j], rv[j]))
                 else:
                     bounds.append((rv[0], rv[-1]))

@@ -343,12 +343,19 @@ def test_extended_antecedent_beliefs_must_be_non_negative():
         RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.0, 0.0], [-0.1, 0.5, 0.6]])]))
 
 
-def test_an_extended_antecedent_may_be_incomplete():
-    """A shortfall is ignorance about where the rule sits, and is allowed."""
-    rb = RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[0.4, 0.0, 0.0], [0.0, 0.3, 0.7]])]))
-    assert rb.antecedent_beliefs[0][0].sum() < 1.0
+def test_an_extended_antecedent_must_be_complete():
+    """Unlike a consequent, an antecedent may not carry ignorance.
+
+    Distance-based matching assumes both distributions have the same mass, and
+    a rule holding less of it matches everything better. See
+    ``test_incomplete_antecedents_would_match_everything_better`` for the
+    behaviour this refusal prevents.
+    """
+    for antecedent in ([[0.4, 0.0, 0.0], [0.0, 0.3, 0.7]], [[0.0, 0.0, 0.0], [0.0, 0.3, 0.7]]):
+        with pytest.raises(ValueError, match="must sum to 1"):
+            RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array(antecedent)]))
 
 
 def test_an_extended_antecedent_may_not_exceed_one():
-    with pytest.raises(ValueError, match="at most 1"):
+    with pytest.raises(ValueError, match="must sum to 1"):
         RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.5, 0.0], [0.0, 0.3, 0.7]])]))

@@ -12,7 +12,8 @@ model = BRBModel(prv, crv, backend="jax")
 The Pyomo/IPOPT backend is activated per training call via
 `method="ipopt"` and does not require a separate `backend=...` setting.
 
-Extended antecedents are NumPy only. A rule base built with
+Extended antecedents are NumPy only, for inference and for training alike. A
+rule base built with
 `antecedent_beliefs` matches by distance between belief distributions, while
 the JAX and Pyomo paths gather one referential index per attribute, which such
 a rule base does not have. Both refuse it rather than silently running a

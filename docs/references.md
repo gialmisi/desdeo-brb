@@ -28,7 +28,9 @@ extensions.
 - **Distance-based matching** [@ZhuangEtAl2021] gives the activation used for
   extended antecedents, in their Eqs. (7) to (9): the distance between the
   input's belief distribution and the rule's, halved before the square root so
-  that two disjoint distributions are exactly one apart. The rule generated from
+  that two disjoint distributions are exactly one apart. That halving assumes
+  both sum to one, which is why an antecedent may not be incomplete even though
+  the formalism admits it. The rule generated from
   a data point in their Eqs. (15) and (16) is checked in
   `tests/integration/test_literature_examples.py`, and the Liu-EBRB accuracies
   of their Table 2 are reproduced to within a point on Iris, Ecoli and Glass in

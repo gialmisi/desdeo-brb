@@ -32,10 +32,13 @@ class RuleBase(BaseModel):
             referential value per attribute, which is the conventional form.
         antecedent_beliefs: One array per attribute, each of shape
             ``(n_rules, n_rv_i)``, giving each rule's belief distribution over
-            that attribute's referential values. This is the extended form
-            (Liu et al. 2008), where a rule may sit between referential values
-            rather than only at them. Supply this or
-            ``rule_antecedent_indices``, not both.
+            that attribute's referential values, summing to one. This is the
+            extended form (Liu et al. 2008), where a rule may sit between
+            referential values rather than only at them. Supply this or
+            ``rule_antecedent_indices``, not both. Unlike a consequent, an
+            antecedent may not be incomplete: distance-based matching assumes
+            equal mass, and a rule with less of it would match everything
+            better.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -141,11 +144,22 @@ class RuleBase(BaseModel):
                     )
                 if np.any(beliefs < 0):
                     raise ValueError(f"antecedent_beliefs[{i}] must be non-negative")
-                # A shortfall is ignorance about where the rule sits, the same
-                # reading the consequent side already gives an incomplete block.
-                if np.any(beliefs.sum(axis=1) > 1.0 + 1e-6):
+                # Unlike a consequent, an antecedent must be complete.
+                #
+                # Distance-based matching compares two distributions and halves
+                # the squared distance so that two disjoint ones are exactly one
+                # apart. That only holds when both sum to one. Give a rule less
+                # mass and it moves closer to every input, so a rule uncertain
+                # about where it sits would outmatch a rule that is sure, and a
+                # rule asserting nothing would beat both. The formalism admits a
+                # sum below one, but neither Liu et al. (2008) nor Zhuang et al.
+                # (2021) say what the distance should then be, so it is refused
+                # rather than computed wrongly.
+                if not np.allclose(beliefs.sum(axis=1), 1.0, atol=1e-6):
                     raise ValueError(
-                        f"antecedent_beliefs[{i}] must sum to at most 1 for every rule"
+                        f"antecedent_beliefs[{i}] must sum to 1 for every rule. An "
+                        "incomplete antecedent would match everything better than a "
+                        "complete one, since distance-based matching assumes equal mass."
                     )
 
         if np.any(self.belief_degrees < 0):
