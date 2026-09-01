@@ -97,7 +97,7 @@ See `notebooks/01_getting_started.ipynb` for a full walkthrough with plots.
 | `.predict_values(X)`                                            | Scalar outputs only, shape `(n_samples,)`, or `(n_samples, n_outputs)` with several outputs.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `.score(X, y)`                                                  | Negative MSE (sklearn convention: higher is better).                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `.get_params()` / `.set_params()`                               | Sklearn-compatible parameter access.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `.rule_base`                                                    | The current `RuleBase` (belief degrees, weights, referential values).                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `.rule_base`                                                    | The current `RuleBase` (belief degrees, weights, referential values, and either `rule_antecedent_indices` or `antecedent_beliefs`).                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **`InferenceResult` fields:**
 
@@ -123,6 +123,8 @@ See source docstrings for full details.
 **Belief degrees** express each rule's consequent as a distribution over the consequent referential values. For example, a rule might say "if temperature is High, then risk is {Low: 0.1, Medium: 0.7, High: 0.2}." A rule's belief degrees sum to at most 1 for each output. A shortfall is the rule's *ignorance* about that consequent, which the evidential reasoning combination carries through to the result rather than discarding.
 
 **Activation weights** measure how strongly each rule matches a given input. When the input falls exactly on a rule's antecedent referential values, that rule gets full activation. Between referential values, adjacent rules share activation proportionally.
+
+**Extended antecedents** let a rule's antecedent be a belief distribution over each attribute's referential values rather than a single one, so a rule may sit between referential values instead of only at them. Pass `antecedent_beliefs` to `RuleBase` in place of `rule_antecedent_indices`; supply one or the other, never both. Matching then compares the input's belief distribution with the rule's by distance, which means a rule is normally activated to some degree by every input rather than only by inputs near its own cell. A rule's antecedent may be incomplete for an attribute, and the shortfall reads as ignorance about where the rule sits. This is the extended belief rule base of Liu et al. (2008); rules are usually read off data points, one per sample, rather than enumerated over the Cartesian product. Inference only, on the NumPy backend: training an extended rule base is not supported yet and raises.
 
 **Combined belief degrees** are computed by the evidential reasoning algorithm, which analytically aggregates the activated rules' belief distributions into an output distribution. The scalar output is the *average expected utility* of that distribution: for a complete assessment this is the plain weighted average of the consequent values, and for an incomplete one it is the midpoint of the interval the unassigned belief could produce. `InferenceResult.utility_bounds` gives that interval and `.ignorance` the unassigned mass.
 
@@ -163,6 +165,12 @@ Evidential Reasoning approach) framework. Key papers:
 5. Misitano, G. (2020). Interactively learning the preferences of a decision
    maker in multi-objective optimization utilizing belief-rules. _IEEE SSCI 2020_,
    133-140.
+6. Liu, J., Martinez, L., Wang, H., Rodriguez, R. M., & Novozhilov, V. (2008).
+   Extended belief rule base inference methodology. _3rd International Conference
+   on Intelligent System and Knowledge Engineering_, 573-578.
+7. Zhuang, J., Ye, J., Chen, N., Fang, W., Fan, X., & Fu, Y. (2021). Extended
+   belief rule-base optimization based on clustering tree and parameter
+   optimization. _IEEE Access_, 9, 12533-12545.
 
 ## Citation
 

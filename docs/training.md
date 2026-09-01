@@ -8,6 +8,12 @@ loss landscape is non-convex with many local minima.
 The belief sum is an equality only when the trained rule base is meant to come
 out complete. See [Incomplete rules](#incomplete-rules) for relaxing it.
 
+Training applies to conventional rule bases, those built with
+`rule_antecedent_indices`. A rule base with
+[extended antecedents](#extended-antecedents) is refused: its antecedents are
+belief distributions rather than indices, and the training paths gather an
+index per attribute.
+
 ## Training methods
 
 `BRBModel.fit(..., method=...)` accepts the following methods:
@@ -161,3 +167,22 @@ model.fit_custom(my_loss, fix_endpoints=True, n_restarts=5)
 `fit_custom` accepts the same `method`, `optimizer_options`, `n_restarts`,
 and other parameters as `fit`. The structural BRB constraints are always
 enforced.
+
+
+## Extended antecedents
+
+An extended rule base carries `antecedent_beliefs`, a belief distribution over
+each attribute's referential values, in place of `rule_antecedent_indices`. Its
+rules are normally read off data, one per sample, rather than enumerated over
+the Cartesian product of referential values.
+
+`fit()` raises `NotImplementedError` for such a rule base. Inference works
+normally on the NumPy backend.
+
+What training one would involve, if it is added: with the antecedent
+distributions and the referential values held fixed, the similarity between an
+input and a rule is constant with respect to every trainable parameter, exactly
+as the gathered matching degree is in the conventional form. The optimisation
+problem therefore keeps its shape and only the constant changes. Making the
+referential values trainable is harder, because the antecedent distributions
+were computed from them and go stale when they move.

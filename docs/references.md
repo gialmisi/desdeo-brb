@@ -20,6 +20,21 @@ extensions.
   expert and random initialisation and reports similar final accuracy at
   markedly different training cost.
 
+## Extended belief rule bases
+
+- **The extended formulation** [@LiuEtAl2008] lets a rule's antecedent be a
+  belief distribution over the referential values rather than a single one, so
+  a rule may sit between them. `RuleBase.antecedent_beliefs` implements this.
+- **Distance-based matching** [@ZhuangEtAl2021] gives the activation used for
+  extended antecedents, in their Eqs. (7) to (9): the distance between the
+  input's belief distribution and the rule's, halved before the square root so
+  that two disjoint distributions are exactly one apart. The rule generated from
+  a data point in their Eqs. (15) and (16) is checked in
+  `tests/integration/test_literature_examples.py`, and the Liu-EBRB accuracies
+  of their Table 2 are reproduced to within a point on Iris, Ecoli and Glass in
+  `tests/integration/test_published_accuracy.py`. Their fourth dataset, Pima, is
+  not covered: UCI has withdrawn it.
+
 ## Applications
 
 - **Pipeline leak detection** [@XuEtAl2007] is the canonical BRB

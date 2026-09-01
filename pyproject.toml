@@ -48,7 +48,14 @@ all = [
     "jupyter>=1.0",
     "matplotlib>=3.7",
 ]
-dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.1", "mypy>=1"]
+dev = [
+    "pytest>=7",
+    "pytest-cov>=4",
+    "ruff>=0.1",
+    "mypy>=1",
+    "scikit-learn>=1.3",
+    "ucimlrepo>=0.0.7",
+]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
@@ -75,6 +82,7 @@ build-backend = "hatchling.build"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "pipeline: pipeline leak detection example tests",
+    "network: needs to download a dataset; skipped when the fetch fails",
 ]
 
 [tool.coverage.run]
