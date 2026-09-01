@@ -351,3 +351,85 @@ def test_output_unchanged_for_a_complete_assessment():
             belief_degrees @ consequents,
             atol=1e-12,
         )
+
+
+# compute_extended_activation_weights tests
+
+
+def _extended_setup():
+    """Two attributes on 0..3, two rules sitting between referential values."""
+    points = [np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0])]
+    antecedents = [
+        np.array([[0.0, 0.0, 0.3, 0.7], [1.0, 0.0, 0.0, 0.0]]),
+        np.array([[0.0, 0.5, 0.5, 0.0], [1.0, 0.0, 0.0, 0.0]]),
+    ]
+    return points, antecedents
+
+
+def test_extended_activation_is_highest_at_the_rule_itself():
+    """A rule fires hardest for the input its antecedent was read from."""
+    from desdeo_brb.inference import compute_extended_activation_weights
+
+    points, antecedents = _extended_setup()
+    alphas = input_transform(np.array([[2.7, 1.5]]), points)
+    weights = compute_extended_activation_weights(
+        alphas, antecedents, np.array([0.5, 0.5]), np.ones((2, 2))
+    )
+    assert weights[0, 0] > weights[0, 1]
+    assert_allclose(weights.sum(axis=1), 1.0)
+
+
+def test_extended_activation_of_a_disjoint_rule_is_zero():
+    """Distributions sharing no referential value are fully dissimilar."""
+    from desdeo_brb.inference import compute_extended_activation_weights
+
+    # The input sits entirely on the first referential value, the rule entirely
+    # on the second, so their distance is one and the similarity zero.
+    alphas = [np.array([[1.0, 0.0]])]
+    antecedents = [np.array([[0.0, 1.0], [1.0, 0.0]])]
+    weights = compute_extended_activation_weights(
+        alphas, antecedents, np.array([0.5, 0.5]), np.ones((2, 1))
+    )
+    assert weights[0, 0] == 0.0
+    assert_allclose(weights[0, 1], 1.0)
+
+
+def test_extended_activation_ignores_an_unweighted_attribute():
+    """A zero attribute weight costs nothing, as in the conventional form."""
+    from desdeo_brb.inference import compute_extended_activation_weights
+
+    points, antecedents = _extended_setup()
+    alphas = input_transform(np.array([[2.7, 1.5]]), points)
+    both = compute_extended_activation_weights(
+        alphas, antecedents, np.array([0.5, 0.5]), np.ones((2, 2))
+    )
+    first_only = compute_extended_activation_weights(
+        alphas, antecedents, np.array([0.5, 0.5]), np.array([[1.0, 0.0], [1.0, 0.0]])
+    )
+    assert not np.allclose(both, first_only)
+    assert_allclose(first_only.sum(axis=1), 1.0)
+
+
+def test_extended_matches_conventional_at_referential_points():
+    """One-hot antecedents and inputs on referential values agree with the gather.
+
+    Away from referential values the two forms differ by design: that is the
+    point of the extended antecedent. On them, they describe the same rule base
+    and must not disagree.
+    """
+    from desdeo_brb.inference import compute_extended_activation_weights
+
+    points = [np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])]
+    indices = np.array([[0, 0], [1, 1], [2, 2], [0, 2]])
+    one_hot = [
+        np.eye(3)[indices[:, 0]],
+        np.eye(3)[indices[:, 1]],
+    ]
+    X = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 2.0]])
+    alphas = input_transform(X, points)
+    thetas = np.full(4, 0.25)
+    deltas = np.ones((4, 2))
+
+    conventional = compute_activation_weights(alphas, indices, thetas, deltas)
+    extended = compute_extended_activation_weights(alphas, one_hot, thetas, deltas)
+    assert_allclose(extended, conventional, atol=1e-12)

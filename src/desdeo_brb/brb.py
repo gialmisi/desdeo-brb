@@ -14,6 +14,7 @@ from desdeo_brb.inference import (
     _utilities_per_block,
     compute_activation_weights,
     compute_combined_belief_degrees,
+    compute_extended_activation_weights,
     compute_output,
     compute_utility_bounds,
     input_transform,
@@ -303,6 +304,14 @@ class BRBModel:
         Returns:
             An :class:`InferenceResult` with all intermediate and final values.
         """
+        # The JAX and Pyomo paths gather one referential value per attribute,
+        # which an extended rule base does not have. Better to say so than to
+        # fall back silently onto a different model than the caller built.
+        if self.rule_base.antecedent_beliefs is not None and self._backend != "numpy":
+            raise NotImplementedError(
+                f"The {self._backend!r} backend does not support extended antecedents; "
+                "use backend='numpy'."
+            )
         if self._backend == "jax":
             return self._predict_jax(X)
         return self._predict_numpy(X)
@@ -312,9 +321,14 @@ class BRBModel:
         rb = self.rule_base
 
         alphas = input_transform(X, rb.precedent_referential_values)
-        weights = compute_activation_weights(
-            alphas, rb.rule_antecedent_indices, rb.rule_weights, rb.attribute_weights
-        )
+        if rb.antecedent_beliefs is not None:
+            weights = compute_extended_activation_weights(
+                alphas, rb.antecedent_beliefs, rb.rule_weights, rb.attribute_weights
+            )
+        else:
+            weights = compute_activation_weights(
+                alphas, rb.conventional_indices, rb.rule_weights, rb.attribute_weights
+            )
         combined = compute_combined_belief_degrees(
             rb.belief_degrees, weights, rb.consequent_group_sizes
         )
@@ -507,6 +521,14 @@ class BRBModel:
         Returns:
             self
         """
+        # Training gathers one referential value per attribute, which an
+        # extended rule base does not have. Refuse rather than train a model
+        # the caller did not build.
+        if self.rule_base.is_extended:
+            raise NotImplementedError(
+                "Training an extended rule base is not supported yet; its antecedents "
+                "are belief distributions rather than indices."
+            )
         # Validate method against backend
         if self._backend == "numpy":
             if method is None:
@@ -1550,7 +1572,7 @@ class BRBModel:
             precedent_referential_values.append(flat[idx : idx + length].copy())
             idx += length
 
-        fields = {
+        fields: dict[str, Any] = {
             "precedent_referential_values": precedent_referential_values,
             "consequent_referential_values": rb.consequent_referential_values,
             "consequent_group_sizes": rb.consequent_group_sizes,
@@ -1558,6 +1580,9 @@ class BRBModel:
             "rule_weights": rule_weights,
             "attribute_weights": attribute_weights,
             "rule_antecedent_indices": rb.rule_antecedent_indices,
+            # Carried through so rebuilding an extended rule base does not
+            # quietly drop the half that makes it extended.
+            "antecedent_beliefs": rb.antecedent_beliefs,
         }
 
         if validate:
@@ -1688,7 +1713,7 @@ class BRBModel:
         mask = np.zeros(rb.n_rules, dtype=bool)
         for i in range(rb.n_attributes):
             max_idx = len(rb.precedent_referential_values[i]) - 1
-            col = rb.rule_antecedent_indices[:, i]
+            col = rb.conventional_indices[:, i]
             mask |= (col == 0) | (col == max_idx)
         return mask
 

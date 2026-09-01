@@ -178,6 +178,75 @@ def _utilities_per_block(
     ]
 
 
+def compute_extended_activation_weights(
+    alphas: list[np.ndarray],
+    antecedent_beliefs: list[np.ndarray],
+    thetas: np.ndarray,
+    deltas: np.ndarray,
+) -> np.ndarray:
+    """Compute activation weights when a rule's antecedent is itself a distribution.
+
+    In a conventional belief rule base a rule names one referential value per
+    attribute, so matching reads off a single degree. In an extended belief rule
+    base (Liu et al. 2008) the antecedent is a belief distribution over the
+    referential values, and matching compares two distributions instead. That is
+    what lets a rule sit between referential values rather than only at them.
+
+    Implements Eqs. (7) to (9) of Zhuang et al. (2021): the distance between the
+    input's belief distribution and the rule's, halved before the square root so
+    that two disjoint distributions are exactly one apart, turned into a
+    similarity, and combined across attributes as the conventional weights are.
+
+    Args:
+        alphas: List of 2-D arrays from :func:`input_transform`, one per
+            attribute. The *i*-th array has shape ``(n_samples, n_rv_i)``.
+        antecedent_beliefs: List of 2-D arrays, one per attribute. The *i*-th
+            array has shape ``(n_rules, n_rv_i)`` and holds each rule's belief
+            distribution over that attribute's referential values.
+        thetas: 1-D array of rule weights, shape ``(n_rules,)``.
+        deltas: 2-D array of attribute weights, shape
+            ``(n_rules, n_attributes)``.
+
+    Returns:
+        2-D array of shape ``(n_samples, n_rules)`` with activation weights
+        that sum to 1 across rules for each sample.
+
+    Notes:
+        Unlike the conventional form, a rule is normally activated to some
+        degree by every input, since two distributions are only fully dissimilar
+        when they share no referential value. A rule whose attribute weight is
+        zero contributes a factor of one, so silence about an attribute costs
+        nothing, exactly as in the conventional form.
+    """
+    n_attributes = len(antecedent_beliefs)
+    n_samples = alphas[0].shape[0]
+    n_rules = antecedent_beliefs[0].shape[0]
+
+    delta_max = deltas.max(axis=1, keepdims=True)
+    safe_delta_max = np.where(delta_max > 0, delta_max, 1.0)
+    delta_bar = np.where(delta_max > 0, deltas / safe_delta_max, 0.0)
+
+    log_product = np.zeros((n_samples, n_rules))
+    any_zero = np.zeros((n_samples, n_rules), dtype=bool)
+
+    for i in range(n_attributes):
+        # (n_samples, n_rules, n_rv_i); halving makes the widest possible
+        # distance between two distributions equal to one.
+        difference = alphas[i][:, None, :] - antecedent_beliefs[i][None, :, :]
+        distance = np.sqrt(np.clip((difference**2).sum(axis=2) / 2.0, 0.0, None))
+        similarity = 1.0 - distance
+
+        db = delta_bar[:, i]
+        zero_mask = (similarity <= 0) & (db > 0)
+        any_zero |= zero_mask
+        safe_similarity = np.where(similarity > 0, similarity, 1.0)
+        log_product += db * np.log(safe_similarity)
+
+    unnorm = thetas * np.where(any_zero, 0.0, np.exp(log_product))
+    denom = unnorm.sum(axis=1, keepdims=True) + 1e-12
+    return unnorm / denom
+
+
 def compute_combined_belief_degrees(
     bre_matrix: np.ndarray,
     weights: np.ndarray,

@@ -28,7 +28,14 @@ class RuleBase(BaseModel):
         rule_weights: Shape ``(n_rules,)``, sums to 1, values in [0, 1].
         attribute_weights: Shape ``(n_rules, n_attributes)``, values >= 0.
         rule_antecedent_indices: Shape ``(n_rules, n_attributes)``, integer
-            indices into the precedent referential value arrays.
+            indices into the precedent referential value arrays. Names one
+            referential value per attribute, which is the conventional form.
+        antecedent_beliefs: One array per attribute, each of shape
+            ``(n_rules, n_rv_i)``, giving each rule's belief distribution over
+            that attribute's referential values. This is the extended form
+            (Liu et al. 2008), where a rule may sit between referential values
+            rather than only at them. Supply this or
+            ``rule_antecedent_indices``, not both.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -39,7 +46,28 @@ class RuleBase(BaseModel):
     belief_degrees: np.ndarray
     rule_weights: np.ndarray
     attribute_weights: np.ndarray
-    rule_antecedent_indices: np.ndarray
+    rule_antecedent_indices: np.ndarray | None = None
+    antecedent_beliefs: list[np.ndarray] | None = None
+
+    @property
+    def is_extended(self) -> bool:
+        """Return whether rules carry belief distributions as their antecedents."""
+        return self.antecedent_beliefs is not None
+
+    @property
+    def conventional_indices(self) -> np.ndarray:
+        """Return the antecedent indices, refusing an extended rule base.
+
+        Raises:
+            ValueError: If this rule base is extended, and so names no single
+                referential value per attribute to return.
+        """
+        if self.rule_antecedent_indices is None:
+            raise ValueError(
+                "This rule base is extended: its antecedents are belief distributions, "
+                "not indices. Read antecedent_beliefs instead."
+            )
+        return self.rule_antecedent_indices
 
     @model_validator(mode="after")
     def _validate_all(self) -> "RuleBase":
@@ -81,11 +109,44 @@ class RuleBase(BaseModel):
                 f"attribute_weights shape {self.attribute_weights.shape} does not "
                 f"match expected ({n_rules}, {n_attributes})"
             )
-        if self.rule_antecedent_indices.shape != (n_rules, n_attributes):
+        # A rule base is conventional or extended, never both: the two describe
+        # the same antecedent in incompatible ways, and silently preferring one
+        # would make the other's contents unreachable. Bound to locals so the
+        # branches below narrow away the optional half.
+        indices = self.rule_antecedent_indices
+        antecedents = self.antecedent_beliefs
+        if (indices is None) == (antecedents is None):
             raise ValueError(
-                f"rule_antecedent_indices shape {self.rule_antecedent_indices.shape} "
-                f"does not match expected ({n_rules}, {n_attributes})"
+                "Supply exactly one of rule_antecedent_indices (conventional) or "
+                "antecedent_beliefs (extended)."
             )
+        if indices is not None:
+            if indices.shape != (n_rules, n_attributes):
+                raise ValueError(
+                    f"rule_antecedent_indices shape {indices.shape} "
+                    f"does not match expected ({n_rules}, {n_attributes})"
+                )
+        elif antecedents is not None:
+            if len(antecedents) != n_attributes:
+                raise ValueError(
+                    f"antecedent_beliefs has {len(antecedents)} entries, "
+                    f"expected one per attribute ({n_attributes})"
+                )
+            for i, beliefs in enumerate(antecedents):
+                expected = (n_rules, len(self.precedent_referential_values[i]))
+                if beliefs.shape != expected:
+                    raise ValueError(
+                        f"antecedent_beliefs[{i}] shape {beliefs.shape} does not match "
+                        f"expected {expected}"
+                    )
+                if np.any(beliefs < 0):
+                    raise ValueError(f"antecedent_beliefs[{i}] must be non-negative")
+                # A shortfall is ignorance about where the rule sits, the same
+                # reading the consequent side already gives an incomplete block.
+                if np.any(beliefs.sum(axis=1) > 1.0 + 1e-6):
+                    raise ValueError(
+                        f"antecedent_beliefs[{i}] must sum to at most 1 for every rule"
+                    )
 
         if np.any(self.belief_degrees < 0):
             raise ValueError("belief_degrees must be non-negative")
@@ -207,7 +268,7 @@ class RuleBase(BaseModel):
         # Build the IF clause
         conditions = []
         for i in range(self.n_attributes):
-            idx = int(self.rule_antecedent_indices[k, i])
+            idx = int(self.conventional_indices[k, i])
             val = float(self.precedent_referential_values[i][idx])
             conditions.append(f"{attribute_names[i]} is {val:.4g}")
         if_clause = " AND ".join(conditions)
@@ -388,7 +449,7 @@ class InferenceResult(BaseModel):
                     attr_names = attribute_names
                 ante_parts = []
                 for i in range(rule_base.n_attributes):
-                    idx = int(rule_base.rule_antecedent_indices[k_idx, i])
+                    idx = int(rule_base.conventional_indices[k_idx, i])
                     val = float(rule_base.precedent_referential_values[i][idx])
                     ante_parts.append(f"{attr_names[i]}={val:.4g}")
                 ante_str = ", ".join(ante_parts)

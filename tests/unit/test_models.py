@@ -296,3 +296,59 @@ def test_inference_result_to_dict():
     assert isinstance(serialized, str)
     assert "activation_weights" in d
     assert "output" in d
+
+
+# Extended antecedents
+
+
+def _extended_kwargs(**overrides):
+    kwargs = {
+        "precedent_referential_values": [np.array([0.0, 1.0, 2.0])],
+        "consequent_referential_values": np.array([0.0, 1.0]),
+        "belief_degrees": np.array([[1.0, 0.0], [0.0, 1.0]]),
+        "rule_weights": np.array([0.5, 0.5]),
+        "attribute_weights": np.ones((2, 1)),
+        "antecedent_beliefs": [np.array([[1.0, 0.0, 0.0], [0.0, 0.3, 0.7]])],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_extended_rule_base_builds():
+    rb = RuleBase(**_extended_kwargs())
+    assert rb.rule_antecedent_indices is None
+    assert rb.antecedent_beliefs is not None
+
+
+def test_exactly_one_antecedent_form_is_required():
+    """Neither form, or both at once, is a specification error."""
+    with pytest.raises(ValueError, match="exactly one"):
+        RuleBase(**_extended_kwargs(antecedent_beliefs=None))
+    with pytest.raises(ValueError, match="exactly one"):
+        RuleBase(**_extended_kwargs(rule_antecedent_indices=np.zeros((2, 1), dtype=int)))
+
+
+def test_extended_antecedent_shape_is_checked():
+    with pytest.raises(ValueError, match=r"antecedent_beliefs\[0\] shape"):
+        RuleBase(**_extended_kwargs(antecedent_beliefs=[np.ones((2, 2))]))
+
+
+def test_extended_antecedent_needs_one_array_per_attribute():
+    with pytest.raises(ValueError, match="one per attribute"):
+        RuleBase(**_extended_kwargs(antecedent_beliefs=[np.eye(3)[:2], np.eye(3)[:2]]))
+
+
+def test_extended_antecedent_beliefs_must_be_non_negative():
+    with pytest.raises(ValueError, match="non-negative"):
+        RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.0, 0.0], [-0.1, 0.5, 0.6]])]))
+
+
+def test_an_extended_antecedent_may_be_incomplete():
+    """A shortfall is ignorance about where the rule sits, and is allowed."""
+    rb = RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[0.4, 0.0, 0.0], [0.0, 0.3, 0.7]])]))
+    assert rb.antecedent_beliefs[0][0].sum() < 1.0
+
+
+def test_an_extended_antecedent_may_not_exceed_one():
+    with pytest.raises(ValueError, match="at most 1"):
+        RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.5, 0.0], [0.0, 0.3, 0.7]])]))

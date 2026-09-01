@@ -12,6 +12,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 from desdeo_brb.brb import BRBModel
+from desdeo_brb.inference import input_transform
 from desdeo_brb.models import RuleBase
 from desdeo_brb.utils import build_rule_antecedent_indices
 
@@ -372,3 +373,59 @@ def test_expert_initial_beliefs_structure_preserved():
     # Referential values sorted ascending
     for rv in rb.precedent_referential_values:
         assert np.all(rv[:-1] <= rv[1:])
+
+
+# Extended belief rule base (Zhuang et al. 2021, IEEE Access 9, 12533-12545)
+
+
+def test_zhuang_rule_generation_example():
+    """Reproduce the rule read off a data point in Zhuang et al. (2021).
+
+    Their Eqs. (15) and (16) take referential values {0, 1, 2, 3} on two
+    attributes and the point (2.7, 1.5), and state the generated rule's
+    antecedent as {0, 0, 0.3, 0.7} and {0, 0.5, 0.5, 0}. Generating an extended
+    rule is exactly the input transformation, so this fixes the convention the
+    extended antecedents are written in.
+    """
+    points = [np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0])]
+    alphas = input_transform(np.array([[2.7, 1.5]]), points)
+
+    assert_allclose(alphas[0][0], [0.0, 0.0, 0.3, 0.7], atol=1e-12)
+    assert_allclose(alphas[1][0], [0.0, 0.5, 0.5, 0.0], atol=1e-12)
+
+
+def test_extended_rule_base_recovers_its_own_training_points():
+    """An extended rule base built one-rule-per-sample classifies them back.
+
+    This is the Liu-EBRB construction Zhuang et al. compare against: the
+    antecedent of each rule is the sample's own belief distribution and the
+    consequent is its class. Predicting the training samples is the weakest
+    property such a rule base must have, and it fails immediately if extended
+    matching is wrong.
+    """
+    generator = np.random.default_rng(0)
+    first = generator.normal([0.0, 0.0], 0.3, size=(20, 2))
+    second = generator.normal([3.0, 3.0], 0.3, size=(20, 2))
+    X = np.vstack([first, second])
+    y = np.array([0] * 20 + [1] * 20)
+
+    points = [np.linspace(X[:, i].min(), X[:, i].max(), 5) for i in range(2)]
+    alphas = input_transform(X, points)
+    beliefs = np.zeros((len(X), 2))
+    beliefs[np.arange(len(X)), y] = 1.0
+
+    rule_base = RuleBase(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=np.array([0.0, 1.0]),
+        belief_degrees=beliefs,
+        rule_weights=np.full(len(X), 1.0 / len(X)),
+        attribute_weights=np.ones((len(X), 2)),
+        antecedent_beliefs=[a.copy() for a in alphas],
+    )
+    model = BRBModel(
+        precedent_referential_values=[p.copy() for p in points],
+        consequent_referential_values=np.array([0.0, 1.0]),
+        rule_base=rule_base,
+    )
+    predicted = np.asarray(model.predict(X).combined_belief_degrees).argmax(axis=1)
+    assert (predicted == y).mean() == 1.0
