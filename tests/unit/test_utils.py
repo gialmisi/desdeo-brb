@@ -57,24 +57,23 @@ class TestPadReferentialValues:
 
     def test_roundtrip_ragged_lengths(self):
         """unpad(pad(x)) == x for ragged arrays."""
-        x = [np.array([0., 1.]), np.array([0., .5, 1.]),
-             np.array([0., .25, .5, .75, 1.])]
+        x = [np.array([0.0, 1.0]), np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.25, 0.5, 0.75, 1.0])]
         padded, lengths = pad_referential_values(x)
         unpad = unpad_referential_values(padded, lengths)
         assert len(unpad) == len(x)
-        for a, b in zip(x, unpad):
+        for a, b in zip(x, unpad, strict=True):
             assert_array_equal(a, b)
 
     def test_padding_shape(self):
         """padded has shape (n_attributes, max_len)."""
-        x = [np.array([1., 2., 3.]), np.array([4.])]
+        x = [np.array([1.0, 2.0, 3.0]), np.array([4.0])]
         padded, lengths = pad_referential_values(x)
         assert padded.shape == (2, 3)
         assert_array_equal(lengths, [3, 1])
 
     def test_padding_values_are_inf(self):
         """Tail padding entries are np.inf; real values are not."""
-        x = [np.array([1., 2.]), np.array([3., 4., 5.])]
+        x = [np.array([1.0, 2.0]), np.array([3.0, 4.0, 5.0])]
         padded, _ = pad_referential_values(x)
         assert padded[0, 2] == np.inf
         # slice is empty (no padding) since length matches max_len
@@ -84,7 +83,7 @@ class TestPadReferentialValues:
 
     def test_uniform_lengths_no_padding(self):
         """When all arrays share a length, no inf appears in padded."""
-        x = [np.array([1., 2., 3.]), np.array([4., 5., 6.])]
+        x = [np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0])]
         padded, lengths = pad_referential_values(x)
         assert padded.shape == (2, 3)
         assert not np.isinf(padded).any()
@@ -92,7 +91,7 @@ class TestPadReferentialValues:
 
     def test_single_attribute(self):
         """A one-element list roundtrips correctly."""
-        x = [np.array([10., 20., 30.])]
+        x = [np.array([10.0, 20.0, 30.0])]
         padded, lengths = pad_referential_values(x)
         assert padded.shape == (1, 3)
         unpad = unpad_referential_values(padded, lengths)
@@ -100,8 +99,8 @@ class TestPadReferentialValues:
 
     def test_unpad_returns_independent_copies(self):
         """Mutating unpad result does not affect padded."""
-        x = [np.array([1., 2., 3.])]
+        x = [np.array([1.0, 2.0, 3.0])]
         padded, lengths = pad_referential_values(x)
         unpad = unpad_referential_values(padded, lengths)
-        unpad[0][0] = 999.
+        unpad[0][0] = 999.0
         assert padded[0, 0] == 1.0
