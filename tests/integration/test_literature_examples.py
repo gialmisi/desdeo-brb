@@ -503,9 +503,7 @@ def test_training_leaves_extended_referential_values_where_they_were():
     )
     model.fit(X, y, method="SLSQP")
 
-    for original, trained in zip(
-        points, model.rule_base.precedent_referential_values, strict=True
-    ):
+    for original, trained in zip(points, model.rule_base.precedent_referential_values, strict=True):
         assert_allclose(trained, original)
 
 

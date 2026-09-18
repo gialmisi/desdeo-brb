@@ -73,16 +73,17 @@ print(result.combined_belief_degrees)  # output belief distribution
 print(model.explain(np.array([[1.5]]), attribute_names=["x"], consequent_name="f(x)"))
 ```
 
-Typical `explain()` output:
+Typical `explain()` output, with `consequent_name` labelling the prediction
+and the combined distribution:
 
 ```
-Prediction: 1.167
+Prediction: f(x)=1.167
 
 Top activated rules:
   Rule 3 (w=1.0000, x=1.5): {1: 0.833, 2: 0.167}
 
 Combined belief distribution:
-  {1: 0.833, 2: 0.167}
+  f(x): {1: 0.833, 2: 0.167}
 ```
 
 ## Next steps

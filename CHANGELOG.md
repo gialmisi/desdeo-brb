@@ -5,6 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-18
+
+### Added
+
+- **Incomplete rules.** A rule's belief degrees may now sum to less than one,
+  the shortfall being its ignorance about that consequent, as RIMER requires
+  (Yang et al. 2006, Eq. 3). Validation previously demanded exactly one, so a
+  rule base could not express an expert who is sure about one region and vague
+  about another.
+  - `RuleBase.ignorance` and `RuleBase.is_complete`.
+  - `compute_utility_bounds`, the utility interval of Yang and Xu (2002,
+    Section II-H). Belief left unassigned could belong to any grade, so an
+    incomplete assessment bounds the output rather than fixing it.
+  - `InferenceResult.utility_bounds`, `.ignorance` and `.is_complete`, filled
+    in by both the NumPy and the JAX prediction paths. `to_dict()` emits the
+    first two alongside the rest of the trace.
+  - `fit(..., allow_incomplete=...)` chooses between the sum-to-one equality
+    and the cap of Yang et al. (2007), constraint 12b. The default, `None`,
+    follows the rule base being trained.
+- **Several consequent attributes.** A rule base can predict more than one
+  output, each with its own grades. Pass `crv` as a list of arrays, one per
+  output, and give `fit` a target of shape `(n_samples, n_outputs)`.
+  - `RuleBase.consequent_group_sizes` delimits the concatenated grades;
+    `n_outputs`, `group_sizes`, `consequent_slices`, `consequent_values()`,
+    `beliefs_for()` and `block_sums` address one output at a time.
+  - `InferenceResult` gains the matching `consequent_group_sizes`, `n_outputs`
+    and `consequent_slices`, and `explain()` prints one belief block per output.
+  - `RuleBase.describe_rule()` and `describe_all_rules()` likewise give each
+    output its own distribution. `consequent_name` accepts a sequence of names,
+    one per output, and refuses a single name for several outputs rather than
+    guessing which objective it belongs to.
+  - Activation weights depend only on the antecedents, so they are computed
+    once and the evidential reasoning combination runs once per output.
+    Completeness and ignorance are per rule per output.
+  - `fit(..., scale_outputs=...)` divides each output's residual by the span of
+    its own grades before squaring, so an objective measured in hundreds does
+    not crowd out one measured in tenths. Pass `False` for the raw sum.
+  - Supported on all three backends: NumPy, JAX and Pyomo/IPOPT.
+- **Extended antecedents.** A rule may carry `antecedent_beliefs`, a belief
+  distribution over each attribute's referential values, in place of
+  `rule_antecedent_indices`, so that it sits between referential values rather
+  than only at them. This is the extended belief rule base of Liu et al. (2008).
+  - `compute_extended_activation_weights` matches two distributions by distance
+    following Zhuang et al. (2021), Eqs. (7) to (9).
+  - `RuleBase.is_extended` and `RuleBase.conventional_indices`.
+  - `describe_rule()`, `describe_all_rules()` and `explain()` all work on an
+    extended rule base, showing each rule's distribution over the referential
+    values in place of the single value it does not have.
+  - `fit()` trains an extended rule base on the NumPy backend. Belief degrees
+    and weights train as usual; the referential values are pinned, since the
+    antecedent distributions were computed against them and would go stale if
+    they moved.
+  - Integration tests reproduce the Liu-EBRB column of Zhuang et al. (2021),
+    Table 2, to within a point on Iris, Ecoli and Glass. Their fourth dataset,
+    Pima, is not covered because UCI withdrew it.
+- Documentation for all three features: an Incomplete rules, a Several outputs
+  and an Extended antecedents section in the training guide, the backend
+  restrictions in the backends guide, the new references, and a rewritten
+  explainability guide covering several outputs, utility bounds and ignorance,
+  and how the description helpers read an extended rule base.
+- `notebooks/05_incomplete_and_multi_output.ipynb`, a worked example of
+  ignorance, utility bounds and several consequent attributes, and of how the
+  two compose: completeness is tracked per rule per output, so a rule base can
+  be confident about one objective and vague about another.
+- A `network` pytest marker for tests that download a dataset, which skip when
+  the fetch fails.
+- The notebooks are executed in CI by `nbmake`, which is now part of the `dev`
+  extra. Nothing previously checked that the tutorials still ran against the
+  API. Run them locally the same way with `pytest --nbmake notebooks/`.
+
+### Changed
+
+- Rows of `RuleBase.belief_degrees` must now be non-negative and sum to at most
+  one, where they previously had to sum to exactly one. This widens what
+  validation accepts, so existing rule bases keep working.
+- The scalar output is the average expected utility of the combined
+  distribution. For a complete assessment this is the plain weighted sum as
+  before; for an incomplete one it is the midpoint of the utility interval.
+- `BRBModel.score()` scales each output's residual by the span of that output's
+  grades. A single output is unscaled, as before.
+
+### Fixed
+
+- `InferenceResult.explain()` and `BRBModel.explain()` ignored their
+  `consequent_name` argument entirely: it was accepted, documented as passed
+  through to `describe_rule`, and then never used, since `explain` builds its
+  own rule descriptions. The name now labels the prediction and the combined
+  belief distribution. This changes the output of `explain()` for callers who
+  were already passing the argument and silently getting nothing for it.
+
+### Known limitations
+
+- Extended antecedents are NumPy only. `backend="jax"` and `method="ipopt"`
+  both gather one referential index per attribute, which an extended rule base
+  does not have, and refuse it rather than silently running a different model.
+  `fix_endpoint_beliefs` likewise raises, since no rule sits on a referential
+  value and so none of them is a boundary rule.
+- An antecedent belief distribution must sum to one. Distance-based matching
+  halves the squared distance so that two disjoint distributions are exactly
+  one apart, which holds only when both carry the same mass; a rule with less
+  of it would match everything better. Liu et al. (2008) and Zhuang et al.
+  (2021) both admit a sum below one, but neither defines the distance for it,
+  so it is refused rather than computed wrongly.
+
+### Dependencies
+
+- Added `scikit-learn` and `ucimlrepo` to the `dev` extra, for the benchmark
+  datasets used by the published-accuracy tests, and `nbmake`, for executing
+  the notebooks. No changes to the core runtime dependencies.
+
+[1.1.0]: https://github.com/gialmisi/desdeo-brb/releases/tag/v1.1.0
+
 ## [1.0.1] - 2026-06-19
 
 ### Added

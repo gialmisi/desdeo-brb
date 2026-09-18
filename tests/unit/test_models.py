@@ -340,7 +340,9 @@ def test_extended_antecedent_needs_one_array_per_attribute():
 
 def test_extended_antecedent_beliefs_must_be_non_negative():
     with pytest.raises(ValueError, match="non-negative"):
-        RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.0, 0.0], [-0.1, 0.5, 0.6]])]))
+        RuleBase(
+            **_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.0, 0.0], [-0.1, 0.5, 0.6]])])
+        )
 
 
 def test_an_extended_antecedent_must_be_complete():
@@ -358,4 +360,134 @@ def test_an_extended_antecedent_must_be_complete():
 
 def test_an_extended_antecedent_may_not_exceed_one():
     with pytest.raises(ValueError, match="must sum to 1"):
-        RuleBase(**_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.5, 0.0], [0.0, 0.3, 0.7]])]))
+        RuleBase(
+            **_extended_kwargs(antecedent_beliefs=[np.array([[1.0, 0.5, 0.0], [0.0, 0.3, 0.7]])])
+        )
+
+
+def _multi_output_rule_base() -> RuleBase:
+    """A two-output rule base: three grades for y1, three for y2."""
+    return RuleBase(
+        precedent_referential_values=[np.array([0.0, 1.0])],
+        consequent_referential_values=np.array([0.0, 0.5, 1.0, 100.0, 250.0, 400.0]),
+        consequent_group_sizes=(3, 3),
+        belief_degrees=np.array(
+            [
+                [0.2, 0.8, 0.0, 0.0, 0.4, 0.6],
+                [0.0, 0.5, 0.5, 1.0, 0.0, 0.0],
+            ]
+        ),
+        rule_weights=np.array([0.5, 0.5]),
+        attribute_weights=np.ones((2, 1)),
+        rule_antecedent_indices=np.array([[0], [1]]),
+    )
+
+
+def test_describe_rule_separates_outputs():
+    """Each output gets its own distribution: its grades say nothing about another's."""
+    rb = _multi_output_rule_base()
+    desc = rb.describe_rule(0)
+    # Default labels, one distribution per output, not one merged over all six grades.
+    assert "y1 = {0: 0.200, 0.5: 0.800}" in desc
+    assert "y2 = {250: 0.400, 400: 0.600}" in desc
+
+
+def test_describe_rule_names_each_output():
+    rb = _multi_output_rule_base()
+    desc = rb.describe_rule(0, consequent_name=["Cost", "Yield"])
+    assert "Cost = {0: 0.200, 0.5: 0.800}" in desc
+    assert "Yield = {250: 0.400, 400: 0.600}" in desc
+    assert "y1" not in desc
+
+
+def test_describe_rule_refuses_one_name_for_several_outputs():
+    """A single name cannot be spread over several outputs, so say so."""
+    rb = _multi_output_rule_base()
+    with pytest.raises(ValueError, match="pass a sequence of names"):
+        rb.describe_rule(0, consequent_name="Everything")
+
+
+def test_describe_rule_refuses_the_wrong_number_of_names():
+    rb = _multi_output_rule_base()
+    with pytest.raises(ValueError, match="expected 2 consequent names"):
+        rb.describe_rule(0, consequent_name=["Cost", "Yield", "Extra"])
+
+
+def test_describe_rule_single_output_is_unlabelled_by_default():
+    """A single output keeps the bare distribution it has always printed."""
+    rb = _make_valid_rule_base()
+    assert (
+        rb.describe_rule(0) == "Rule 0: IF x1 is 0 AND x2 is 0 THEN {0: 0.500, 1: 0.500} [w=0.167]"
+    )
+
+
+def test_describe_rule_shows_an_extended_antecedent_as_a_distribution():
+    """An extended rule sits between referential values, so it prints them all."""
+    rb = RuleBase(**_extended_kwargs())
+    desc = rb.describe_rule(1)
+    assert "x1 is {1: 0.300, 2: 0.700}" in desc
+    assert "THEN {1: 1.000}" in desc
+
+
+def test_describe_all_rules_covers_an_extended_rule_base():
+    rb = RuleBase(**_extended_kwargs())
+    lines = rb.describe_all_rules().strip().split("\n")
+    assert len(lines) == rb.n_rules
+
+
+def test_explain_uses_the_consequent_name():
+    """The name labels the prediction and the combined distribution."""
+    result = InferenceResult(
+        input_belief_distributions=[np.array([[0.5, 0.5]])],
+        activation_weights=np.array([[1.0]]),
+        combined_belief_degrees=np.array([[0.4, 0.6]]),
+        consequent_values=np.array([0.0, 1.0]),
+        output=np.array([0.6]),
+    )
+    text = result.explain(consequent_name="f(x)")
+    assert "Prediction: f(x)=0.6" in text
+    assert "  f(x): {0: 0.400, 1: 0.600}" in text
+
+
+def test_explain_without_a_name_is_unlabelled():
+    """Omitting the name leaves the output exactly as it was before."""
+    result = InferenceResult(
+        input_belief_distributions=[np.array([[0.5, 0.5]])],
+        activation_weights=np.array([[1.0]]),
+        combined_belief_degrees=np.array([[0.4, 0.6]]),
+        consequent_values=np.array([0.0, 1.0]),
+        output=np.array([0.6]),
+    )
+    text = result.explain()
+    assert "Prediction: 0.6" in text
+    assert "\n  {0: 0.400, 1: 0.600}" in text
+
+
+def test_explain_names_several_outputs():
+    result = InferenceResult(
+        input_belief_distributions=[np.array([[0.5, 0.5]])],
+        activation_weights=np.array([[1.0]]),
+        combined_belief_degrees=np.array([[0.4, 0.6, 0.3, 0.7]]),
+        consequent_values=np.array([0.0, 1.0, 10.0, 20.0]),
+        consequent_group_sizes=(2, 2),
+        output=np.array([[0.6, 17.0]]),
+    )
+    text = result.explain(consequent_name=["Cost", "Yield"])
+    assert "Prediction: Cost=0.6, Yield=17" in text
+    assert "  Cost: {0: 0.400, 1: 0.600}" in text
+    assert "  Yield: {10: 0.300, 20: 0.700}" in text
+
+
+def test_explain_describes_extended_rules_by_their_antecedents():
+    """An extended rule base no longer falls back to bare rule indices."""
+    rb = RuleBase(**_extended_kwargs())
+    result = InferenceResult(
+        input_belief_distributions=[np.array([[0.0, 0.5, 0.5]])],
+        activation_weights=np.array([[0.4, 0.6]]),
+        combined_belief_degrees=np.array([[0.3, 0.7]]),
+        consequent_values=np.array([0.0, 1.0]),
+        output=np.array([0.7]),
+    )
+    text = result.explain(rule_base=rb)
+    assert "x1={1: 0.300, 2: 0.700}" in text
+    assert "x1={0: 1.000}" in text

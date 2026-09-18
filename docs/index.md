@@ -11,6 +11,8 @@ optimization backends, and first-class explainability.
 - Trainable BRB models with MSE or custom loss objectives
 - Several consequent attributes per rule base, each with its own grades
 - Incomplete rules, where a rule may leave belief unassigned as ignorance
+- Extended antecedents, where a rule sits between referential values rather
+  than only at them
 - scikit-learn-style `fit()` / `predict()` API
 - Multiple training backends: NumPy (SLSQP, trust-constr, DE), JAX (L-BFGS-B with autodiff), and Pyomo (IPOPT with exact Hessians)
 - Multi-start optimization for non-convex problems

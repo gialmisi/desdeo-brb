@@ -4,8 +4,57 @@ Defines the core data containers used throughout the BRB system:
 rule bases, inference results, and trainable parameter containers.
 """
 
+from collections.abc import Sequence
+
 import numpy as np
 from pydantic import BaseModel, ConfigDict, model_validator
+
+
+def _resolve_consequent_names(
+    consequent_name: str | Sequence[str] | None, n_outputs: int
+) -> list[str | None]:
+    """Return one display name per output, or ``None`` where there is none.
+
+    A single output without a name keeps no label at all, which is what it has
+    always printed. Several outputs without names fall back to ``y1, y2, ...``,
+    since a distribution has to say which objective it belongs to.
+
+    Args:
+        consequent_name: One name for a single output, a sequence giving one
+            name per output, or ``None`` for the defaults above.
+        n_outputs: How many consequent attributes are being described.
+
+    Raises:
+        ValueError: If a single name is given for several outputs, or if a
+            sequence does not have one name per output.
+    """
+    if consequent_name is None:
+        return [None] if n_outputs == 1 else [f"y{o + 1}" for o in range(n_outputs)]
+    if isinstance(consequent_name, str):
+        if n_outputs > 1:
+            raise ValueError(
+                f"one consequent name was given but there are {n_outputs} outputs; "
+                "pass a sequence of names, one per output"
+            )
+        return [consequent_name]
+    names = list(consequent_name)
+    if len(names) != n_outputs:
+        raise ValueError(f"expected {n_outputs} consequent names, one per output, got {len(names)}")
+    return names
+
+
+def _format_distribution(values: np.ndarray, weights: np.ndarray, threshold: float) -> str:
+    """Format a belief distribution as ``{value: weight, ...}``.
+
+    Entries whose weight is below *threshold* are omitted, so that a rule's
+    description shows what it asserts rather than every grade it does not.
+    """
+    entries = ", ".join(
+        f"{float(v):.4g}: {float(w):.3f}"
+        for v, w in zip(values, weights, strict=True)
+        if w >= threshold
+    )
+    return "{" + entries + "}"
 
 
 class RuleBase(BaseModel):
@@ -262,42 +311,66 @@ class RuleBase(BaseModel):
         self,
         k: int,
         attribute_names: list[str] | None = None,
-        consequent_name: str | None = None,
+        consequent_name: str | Sequence[str] | None = None,
         show_zero_beliefs: bool = False,
     ) -> str:
         """Return a human-readable description of rule *k*.
+
+        With several outputs each consequent gets its own distribution, because
+        the grades of one objective say nothing about another's::
+
+            Rule 0: IF x1 is 0 THEN y1 = {0: 0.500, 1: 0.500},
+                                    y2 = {100: 0.300, 250: 0.700} [w=0.143]
+
+        An extended rule carries a belief distribution over each attribute's
+        referential values rather than sitting on one of them, and its IF
+        clause shows that distribution::
+
+            Rule 7: IF x1 is {1: 0.300, 2: 0.700} THEN {...} [w=0.010]
 
         Args:
             k: Rule index (0-based).
             attribute_names: Display names for each attribute. If ``None``,
                 uses ``x1, x2, ...``.
-            consequent_name: Display name for the consequent. If ``None``,
-                omitted from the output.
-            show_zero_beliefs: If ``False`` (default), skip consequent
-                values whose belief degree is below 0.001.
+            consequent_name: Display name for the consequent: one name for a
+                single output, or a sequence giving one name per output. If
+                ``None``, a single output is left unlabelled and several
+                outputs fall back to ``y1, y2, ...``.
+            show_zero_beliefs: If ``False`` (default), skip values whose
+                belief degree is below 0.001.
+
+        Raises:
+            ValueError: If a single consequent name is given for several
+                outputs, or a sequence does not have one name per output.
         """
         if attribute_names is None:
             attribute_names = [f"x{i + 1}" for i in range(self.n_attributes)]
+        threshold = 0.0 if show_zero_beliefs else 0.001
 
         # Build the IF clause
         conditions = []
         for i in range(self.n_attributes):
-            idx = int(self.conventional_indices[k, i])
-            val = float(self.precedent_referential_values[i][idx])
-            conditions.append(f"{attribute_names[i]} is {val:.4g}")
+            if self.antecedent_beliefs is not None:
+                value = _format_distribution(
+                    self.precedent_referential_values[i],
+                    self.antecedent_beliefs[i][k],
+                    threshold,
+                )
+            else:
+                idx = int(self.conventional_indices[k, i])
+                value = f"{float(self.precedent_referential_values[i][idx]):.4g}"
+            conditions.append(f"{attribute_names[i]} is {value}")
         if_clause = " AND ".join(conditions)
 
-        # Build the THEN clause
+        # Build the THEN clause, one distribution per output
         crv = self.consequent_referential_values
         bd = self.belief_degrees[k]
-        belief_parts = []
-        for n in range(self.n_consequents):
-            if not show_zero_beliefs and bd[n] < 0.001:
-                continue
-            belief_parts.append(f"{float(crv[n]):.4g}: {bd[n]:.3f}")
-        then_clause = "{" + ", ".join(belief_parts) + "}"
-        if consequent_name is not None:
-            then_clause = f"{consequent_name} = {then_clause}"
+        names = _resolve_consequent_names(consequent_name, self.n_outputs)
+        blocks = []
+        for block, name in zip(self.consequent_slices, names, strict=True):
+            distribution = _format_distribution(crv[block], bd[block], threshold)
+            blocks.append(f"{name} = {distribution}" if name is not None else distribution)
+        then_clause = ", ".join(blocks)
 
         theta = float(self.rule_weights[k])
         return f"Rule {k}: IF {if_clause} THEN {then_clause} [w={theta:.3f}]"
@@ -305,7 +378,7 @@ class RuleBase(BaseModel):
     def describe_all_rules(
         self,
         attribute_names: list[str] | None = None,
-        consequent_name: str | None = None,
+        consequent_name: str | Sequence[str] | None = None,
         show_zero_beliefs: bool = False,
     ) -> str:
         """Return a multi-line string describing every rule."""
@@ -322,14 +395,19 @@ class InferenceResult(BaseModel):
         input_belief_distributions: List of arrays, one per attribute, each
             of shape ``(n_samples, n_ref_values_i)``.
         activation_weights: Shape ``(n_samples, n_rules)``.
-        combined_belief_degrees: Shape ``(n_samples, n_consequents)``.
-        consequent_values: 1-D array of consequent referential values.
-        output: Shape ``(n_samples,)``, scalar numerical outputs.
+        combined_belief_degrees: Shape ``(n_samples, n_consequents)``. With
+            several outputs their grades are concatenated along the last axis
+            and delimited by ``consequent_group_sizes``; ``consequent_slices``
+            gives the column range of each.
+        consequent_values: 1-D array of consequent referential values, laid out
+            to match ``combined_belief_degrees``.
+        output: Scalar numerical outputs, of shape ``(n_samples,)`` for a
+            single output and ``(n_samples, n_outputs)`` otherwise.
         consequent_group_sizes: Number of grades belonging to each output, or
             ``None`` for a single output.
-        utility_bounds: Optional pair of arrays of shape ``(n_samples,)``
-            bounding the output when the assessment is incomplete. Equal to each
-            other, and to ``output``, when it is complete.
+        utility_bounds: Optional pair of arrays, each shaped like ``output``,
+            bounding it when the assessment is incomplete. Equal to each other,
+            and to ``output``, when it is complete.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -405,7 +483,7 @@ class InferenceResult(BaseModel):
         top_k: int = 3,
         rule_base: "RuleBase | None" = None,
         attribute_names: list[str] | None = None,
-        consequent_name: str | None = None,
+        consequent_name: str | Sequence[str] | None = None,
         threshold: float = 0.01,
     ) -> str:
         """Return a human-readable explanation of a single prediction.
@@ -414,22 +492,34 @@ class InferenceResult(BaseModel):
             sample_idx: Which sample in the batch to explain.
             top_k: Number of top-activated rules to show.
             rule_base: The ``RuleBase`` used for the prediction. If
-                provided, rule descriptions include antecedent values.
-                If ``None``, rules are identified by index only.
-            attribute_names: Passed through to ``RuleBase.describe_rule``.
-            consequent_name: Passed through to ``RuleBase.describe_rule``.
+                provided, rule descriptions include antecedent values, or
+                antecedent distributions for an extended rule base. If
+                ``None``, rules are identified by index only.
+            attribute_names: Display names for each attribute. If ``None``,
+                uses ``x1, x2, ...``.
+            consequent_name: Display name for the consequent, labelling the
+                prediction and the combined distribution: one name for a
+                single output, or a sequence giving one name per output. If
+                ``None``, a single output is left unlabelled and several
+                outputs fall back to ``y1, y2, ...``.
             threshold: Minimum activation weight or belief degree to
                 display; values below this are omitted for clarity.
+
+        Raises:
+            ValueError: If a single consequent name is given for several
+                outputs, or a sequence does not have one name per output.
         """
         lines: list[str] = []
         s = sample_idx
+        names = _resolve_consequent_names(consequent_name, self.n_outputs)
 
-        # Scalar output, one line per output attribute
-        if self.n_outputs == 1:
-            lines.append(f"Prediction: {float(self.output[s]):.4g}")
-        else:
-            values = ", ".join(f"y{o + 1}={float(v):.4g}" for o, v in enumerate(self.output[s]))
-            lines.append(f"Prediction: {values}")
+        # Scalar output, one entry per output attribute
+        values = np.atleast_1d(self.output[s])
+        labelled = [
+            f"{value:.4g}" if name is None else f"{name}={value:.4g}"
+            for name, value in zip(names, (float(v) for v in values), strict=True)
+        ]
+        lines.append(f"Prediction: {', '.join(labelled)}")
         lines.append("")
 
         # Top activated rules
@@ -446,16 +536,10 @@ class InferenceResult(BaseModel):
                 crv = rule_base.consequent_referential_values
                 # With several outputs each block is shown on its own, because
                 # the grades of one objective say nothing about another's.
-                blocks = rule_base.consequent_slices
-                block_strs = []
-                for block in blocks:
-                    entries = ", ".join(
-                        f"{float(crv[n]):.4g}: {bd[n]:.3f}"
-                        for n in range(block.start, block.stop)
-                        if bd[n] >= threshold
-                    )
-                    block_strs.append("{" + entries + "}")
-                belief_str = " ".join(block_strs) if len(blocks) > 1 else block_strs[0][1:-1]
+                belief_str = " ".join(
+                    _format_distribution(crv[block], bd[block], threshold)
+                    for block in rule_base.consequent_slices
+                )
 
                 if attribute_names is None:
                     attr_names = [f"x{i + 1}" for i in range(rule_base.n_attributes)]
@@ -463,14 +547,20 @@ class InferenceResult(BaseModel):
                     attr_names = attribute_names
                 ante_parts = []
                 for i in range(rule_base.n_attributes):
-                    idx = int(rule_base.conventional_indices[k_idx, i])
-                    val = float(rule_base.precedent_referential_values[i][idx])
-                    ante_parts.append(f"{attr_names[i]}={val:.4g}")
+                    # An extended rule sits between referential values rather
+                    # than on one, so it shows its distribution over them.
+                    if rule_base.antecedent_beliefs is not None:
+                        value = _format_distribution(
+                            rule_base.precedent_referential_values[i],
+                            rule_base.antecedent_beliefs[i][k_idx],
+                            threshold,
+                        )
+                    else:
+                        idx = int(rule_base.conventional_indices[k_idx, i])
+                        value = f"{float(rule_base.precedent_referential_values[i][idx]):.4g}"
+                    ante_parts.append(f"{attr_names[i]}={value}")
                 ante_str = ", ".join(ante_parts)
-                if rule_base.n_outputs > 1:
-                    lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {belief_str}")
-                else:
-                    lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {{{belief_str}}}")
+                lines.append(f"  Rule {int(k_idx)} (w={wk:.4f}, {ante_str}): {belief_str}")
             else:
                 lines.append(f"  Rule {int(k_idx)} (w={wk:.4f})")
 
@@ -479,15 +569,9 @@ class InferenceResult(BaseModel):
         lines.append("Combined belief distribution:")
         crv = self.consequent_values
         beta = self.combined_belief_degrees[s]
-        blocks = self.consequent_slices
-        for o, block in enumerate(blocks):
-            parts = []
-            for n in range(block.start, block.stop):
-                if beta[n] < threshold:
-                    continue
-                parts.append(f"{float(crv[n]):.4g}: {beta[n]:.3f}")
-            prefix = "  " if len(blocks) == 1 else f"  y{o + 1}: "
-            lines.append(f"{prefix}{{{', '.join(parts)}}}")
+        for block, name in zip(self.consequent_slices, names, strict=True):
+            prefix = "  " if name is None else f"  {name}: "
+            lines.append(f"{prefix}{_format_distribution(crv[block], beta[block], threshold)}")
 
         return "\n".join(lines)
 

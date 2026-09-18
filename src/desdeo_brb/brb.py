@@ -4,7 +4,7 @@ Provides the ``BRBModel`` class which supports fitting, predicting, and
 inspecting a Belief Rule-Based inference system.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -415,7 +415,8 @@ class BRBModel:
             X: Input array of shape ``(n_samples, n_attributes)``.
 
         Returns:
-            1-D array of shape ``(n_samples,)``.
+            Shape ``(n_samples,)`` for a single output, ``(n_samples,
+            n_outputs)`` otherwise.
         """
         return self.predict(X).output
 
@@ -425,7 +426,7 @@ class BRBModel:
         sample_idx: int = 0,
         top_k: int = 3,
         attribute_names: list[str] | None = None,
-        consequent_name: str | None = None,
+        consequent_name: str | Sequence[str] | None = None,
         threshold: float = 0.01,
     ) -> str:
         """Predict on *X* and return a human-readable explanation.
@@ -438,7 +439,8 @@ class BRBModel:
             sample_idx: Which sample in the batch to explain.
             top_k: Number of top-activated rules to show.
             attribute_names: Display names for each attribute.
-            consequent_name: Display name for the consequent.
+            consequent_name: Display name for the consequent: one name for a
+                single output, or a sequence giving one name per output.
             threshold: Minimum weight/belief to display.
         """
         result = self.predict(X)
@@ -475,7 +477,8 @@ class BRBModel:
 
         Args:
             X: Training inputs, shape ``(n_samples, n_attributes)``.
-            y: Target values, shape ``(n_samples,)``.
+            y: Target values, shape ``(n_samples,)`` for a single output and
+                ``(n_samples, n_outputs)`` otherwise.
             fix_endpoints: If ``True``, fix the first and last precedent
                 referential values (endpoints of each attribute's range).
             fix_endpoint_beliefs: If ``True``, also fix the belief degrees
