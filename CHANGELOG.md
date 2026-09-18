@@ -95,6 +95,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   belief distribution. This changes the output of `explain()` for callers who
   were already passing the argument and silently getting nothing for it.
 
+### Tests
+
+- Direct unit tests for `pad_referential_values` and `unpad_referential_values`,
+  covering the ragged-length roundtrip, the padded shape and `np.inf` tail, the
+  uniform-length case, a single attribute, and that unpadding returns
+  independent copies. Both are public helpers that were previously exercised
+  only incidentally, as plumbing inside the JAX backend tests, so their own
+  contract was never asserted. Thanks to @gaomingyi779-del (#18, closes #16).
+
 ### Known limitations
 
 - Extended antecedents are NumPy only. `backend="jax"` and `method="ipopt"`
@@ -113,7 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `scikit-learn` and `ucimlrepo` to the `dev` extra, for the benchmark
   datasets used by the published-accuracy tests, and `nbmake`, for executing
-  the notebooks. No changes to the core runtime dependencies.
+  the notebooks.
+- Bumped several development, docs, and notebook dependencies via Dependabot:
+  `mistune` (#20), `pillow` (#21), `setuptools` (#22), `jupyterlab` (#23),
+  `pymdown-extensions` (#25), `tornado` (#26), `mkdocs-material` (#27) and
+  `soupsieve` (#28). The `pymdown-extensions` bump crosses a major version,
+  whose breaking change is confined to the B64 extension that `mkdocs.yml`
+  does not load; the documentation builds unchanged.
+- No changes to the core runtime dependencies.
 
 [1.1.0]: https://github.com/gialmisi/desdeo-brb/releases/tag/v1.1.0
 
