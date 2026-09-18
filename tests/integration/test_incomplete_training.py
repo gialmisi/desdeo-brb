@@ -92,22 +92,39 @@ def test_an_incomplete_rule_base_can_be_completed_on_request():
     assert model.rule_base.is_complete
 
 
-def test_ignorance_can_grow_when_the_data_prefers_a_vague_rule():
-    """Pure noise about the midpoint is a target that rewards not committing.
+def test_total_ignorance_predicts_the_midpoint_through_the_whole_model():
+    """A rule base that says nothing predicts the middle of its own scale.
 
-    Under the average expected utility, total ignorance predicts the midpoint of
-    the utility range. A target sitting there is the case where declining to
-    commit is the honest answer, so ignorance should be able to reach it from a
-    complete starting rule base.
+    This is the premise behind allowing ignorance at all: unassigned belief
+    could have gone to any grade, so the output is only known to lie between
+    the least and most preferred one, and the point estimate is the midpoint of
+    that interval. `tests/unit/test_inference.py` pins this for the combination
+    and output functions; here it runs through `predict`, so activation
+    weighting and the evidential reasoning combination are in the path too.
     """
-    rng = np.random.default_rng(1)
-    X = rng.random((200, 1))
-    y = 0.5 + rng.normal(scale=0.30, size=200)
+    base = BRBModel(PRECEDENT_RV, CONSEQUENT_RV).rule_base
+    ignorant = RuleBase(
+        precedent_referential_values=base.precedent_referential_values,
+        consequent_referential_values=base.consequent_referential_values,
+        belief_degrees=np.zeros_like(base.belief_degrees),
+        rule_weights=base.rule_weights,
+        attribute_weights=base.attribute_weights,
+        rule_antecedent_indices=base.rule_antecedent_indices,
+    )
+    assert not ignorant.is_complete
+    assert_allclose(ignorant.ignorance, 1.0, atol=1e-12)
 
-    model = BRBModel(PRECEDENT_RV, CONSEQUENT_RV)
-    model.fit(X, y, method="SLSQP", allow_incomplete=True, optimizer_options={"maxiter": 300})
+    model = BRBModel(PRECEDENT_RV, CONSEQUENT_RV, rule_base=ignorant)
+    result = model.predict(np.array([[0.0], [0.3], [0.7], [1.0]]))
 
-    assert model.rule_base.ignorance.max() > 0.05
+    lowest, highest = CONSEQUENT_RV.min(), CONSEQUENT_RV.max()
+    lower, upper = result.utility_bounds
+
+    assert_allclose(result.output, 0.5 * (lowest + highest), atol=1e-12)
+    assert_allclose(result.ignorance, 1.0, atol=1e-12)
+    assert_allclose(lower, lowest, atol=1e-12)
+    assert_allclose(upper, highest, atol=1e-12)
+    assert not result.is_complete
 
 
 @pytest.mark.skipif(not JAX_AVAILABLE, reason="JAX not installed")
