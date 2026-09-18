@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extended antecedents.** A rule may carry `antecedent_beliefs`, a belief
   distribution over each attribute's referential values, in place of
   `rule_antecedent_indices`, so that it sits between referential values rather
-  than only at them. This is the extended belief rule base of Liu et al. (2008).
+  than only at them. This is the extended belief rule base of Liu et al. (2013).
   - `compute_extended_activation_weights` matches two distributions by distance
     following Zhuang et al. (2021), Eqs. (7) to (9).
   - `RuleBase.is_extended` and `RuleBase.conventional_indices`.
@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     antecedent distributions were computed against them and would go stale if
     they moved.
   - Integration tests reproduce the Liu-EBRB column of Zhuang et al. (2021),
-    Table 2, to within a point on Iris, Ecoli and Glass. Their fourth dataset,
+    Table 4, to within a point on Iris, Ecoli and Glass. Their fourth dataset,
     Pima, is not covered because UCI withdrew it.
 - Documentation for all three features: an Incomplete rules, a Several outputs
   and an Extended antecedents section in the training guide, the backend
@@ -114,7 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An antecedent belief distribution must sum to one. Distance-based matching
   halves the squared distance so that two disjoint distributions are exactly
   one apart, which holds only when both carry the same mass; a rule with less
-  of it would match everything better. Liu et al. (2008) and Zhuang et al.
+  of it would match everything better. Liu et al. (2013) and Zhuang et al.
   (2021) both admit a sum below one, but neither defines the distance for it,
   so it is refused rather than computed wrongly.
 

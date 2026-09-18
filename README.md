@@ -124,7 +124,7 @@ See source docstrings for full details.
 
 **Activation weights** measure how strongly each rule matches a given input. When the input falls exactly on a rule's antecedent referential values, that rule gets full activation. Between referential values, adjacent rules share activation proportionally.
 
-**Extended antecedents** let a rule's antecedent be a belief distribution over each attribute's referential values rather than a single one, so a rule may sit between referential values instead of only at them. Pass `antecedent_beliefs` to `RuleBase` in place of `rule_antecedent_indices`; supply one or the other, never both. Matching then compares the input's belief distribution with the rule's by distance, which means a rule is normally activated to some degree by every input rather than only by inputs near its own cell. An antecedent must be complete: unlike a consequent it may not carry ignorance, because distance-based matching assumes equal mass and a rule holding less of it would match everything better. This is the extended belief rule base of Liu et al. (2008); rules are usually read off data points, one per sample, rather than enumerated over the Cartesian product. NumPy backend only. Training works and adjusts belief degrees and weights, but holds the referential values where they are, since the antecedent distributions were computed against them.
+**Extended antecedents** let a rule's antecedent be a belief distribution over each attribute's referential values rather than a single one, so a rule may sit between referential values instead of only at them. Pass `antecedent_beliefs` to `RuleBase` in place of `rule_antecedent_indices`; supply one or the other, never both. Matching then compares the input's belief distribution with the rule's by distance, which means a rule is normally activated to some degree by every input rather than only by inputs near its own cell. An antecedent must be complete: unlike a consequent it may not carry ignorance, because distance-based matching assumes equal mass and a rule holding less of it would match everything better. This is the extended belief rule base of Liu et al. (2013); rules are usually read off data points, one per sample, rather than enumerated over the Cartesian product. NumPy backend only. Training works and adjusts belief degrees and weights, but holds the referential values where they are, since the antecedent distributions were computed against them.
 
 **Combined belief degrees** are computed by the evidential reasoning algorithm, which analytically aggregates the activated rules' belief distributions into an output distribution. The scalar output is the *average expected utility* of that distribution: for a complete assessment this is the plain weighted average of the consequent values, and for an incomplete one it is the midpoint of the interval the unassigned belief could produce. `InferenceResult.utility_bounds` gives that interval and `.ignorance` the unassigned mass.
 
@@ -165,12 +165,20 @@ Evidential Reasoning approach) framework. Key papers:
 5. Misitano, G. (2020). Interactively learning the preferences of a decision
    maker in multi-objective optimization utilizing belief-rules. _IEEE SSCI 2020_,
    133-140.
-6. Liu, J., Martinez, L., Wang, H., Rodriguez, R. M., & Novozhilov, V. (2008).
-   Extended belief rule base inference methodology. _3rd International Conference
-   on Intelligent System and Knowledge Engineering_, 573-578.
+6. Liu, J., Martinez, L., Calzada, A., & Wang, H. (2013). A novel belief rule
+   base representation, generation and its inference methodology.
+   _Knowledge-Based Systems_, 53, 129-141.
 7. Zhuang, J., Ye, J., Chen, N., Fang, W., Fan, X., & Fu, Y. (2021). Extended
    belief rule-base optimization based on clustering tree and parameter
-   optimization. _IEEE Access_, 9, 12533-12545.
+   optimization. _IEEE Access_, 9, 12533-12544.
+8. Yang, J.-B., & Xu, D.-L. (2002). On the evidential reasoning algorithm for
+   multiple attribute decision analysis under uncertainty. _IEEE Transactions on
+   Systems, Man, and Cybernetics — Part A_, 32(3), 289-304.
+9. Wang, Y.-M., Yang, J.-B., & Xu, D.-L. (2006). Environmental impact assessment
+   using the evidential reasoning approach. _European Journal of Operational
+   Research_, 174(3), 1885-1913.
+10. Yang, J.-B., & Xu, D.-L. (2013). Evidential reasoning rule for evidence
+    combination. _Artificial Intelligence_, 205, 1-29.
 
 ## Citation
 

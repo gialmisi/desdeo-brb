@@ -1,6 +1,6 @@
 """Reproduce published accuracies for the extended belief rule base.
 
-Zhuang et al. (2021), Table 2, reports the accuracy of Liu-EBRB, the plain
+Zhuang et al. (2021), Table 4, reports the accuracy of Liu-EBRB, the plain
 extended belief rule base without their clustering tree or differential
 evolution training, under ten-fold cross validation with five referential
 values per attribute.
@@ -92,7 +92,7 @@ def _from_uci(dataset_id: int) -> tuple[np.ndarray, np.ndarray, int]:
 
 
 def test_iris_matches_published_accuracy():
-    """Zhuang et al. (2021) Table 2 reports 95.26 per cent for Liu-EBRB on Iris."""
+    """Zhuang et al. (2021) Table 4 reports 95.26 per cent for Liu-EBRB on Iris."""
     sklearn_datasets = pytest.importorskip("sklearn.datasets")
     data = sklearn_datasets.load_iris()
     accuracy = _liu_ebrb_accuracy(data.data, data.target, 3)
@@ -101,7 +101,7 @@ def test_iris_matches_published_accuracy():
 
 @pytest.mark.network
 def test_ecoli_matches_published_accuracy():
-    """Table 2 reports 81.16 per cent for Liu-EBRB on Ecoli.
+    """Table 4 reports 81.16 per cent for Liu-EBRB on Ecoli.
 
     Their Table 1 lists Ecoli as having two categories. It has eight, and eight
     is what reproduces their accuracy, so that entry is a typo.
@@ -114,7 +114,7 @@ def test_ecoli_matches_published_accuracy():
 
 @pytest.mark.network
 def test_glass_matches_published_accuracy():
-    """Table 2 reports 67.85 per cent for Liu-EBRB on Glass."""
+    """Table 4 reports 67.85 per cent for Liu-EBRB on Glass."""
     X, y, n_classes = _from_uci(42)
     accuracy = _liu_ebrb_accuracy(X, y, n_classes)
     assert accuracy == pytest.approx(67.85, abs=TOLERANCE)

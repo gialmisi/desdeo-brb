@@ -69,7 +69,7 @@ def test_xsinx2_training_improves_mse():
     assert mse_trained < 0.05, f"Trained MSE too high: {mse_trained:.4f}"
 
 
-# Test 2: f(x1, x2) = x1 + x2 from the thesis, Section 3.5
+# Test 2: f(x1, x2) = x1 + x2 from Misitano (2020), Section 3.5
 
 
 def test_x1_plus_x2_at_referential_values():

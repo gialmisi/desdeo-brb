@@ -188,7 +188,7 @@ def compute_extended_activation_weights(
 
     In a conventional belief rule base a rule names one referential value per
     attribute, so matching reads off a single degree. In an extended belief rule
-    base (Liu et al. 2008) the antecedent is a belief distribution over the
+    base (Liu et al. 2013) the antecedent is a belief distribution over the
     referential values, and matching compares two distributions instead. That is
     what lets a rule sit between referential values rather than only at them.
 
@@ -254,7 +254,11 @@ def compute_combined_belief_degrees(
 ) -> np.ndarray:
     """Combine activated belief degrees using the analytical evidential reasoning algorithm.
 
-    Implements Eq. A-15 from Chen et al. (2011) / Eq. 3.20 from the thesis.
+    Implements Eq. A-15 from Chen et al. (2011), equivalently Eq. 3.20 of
+    Misitano (2020). The analytical form originates with Wang et al. (2006),
+    which derives it as an explicit aggregation function for the ER approach,
+    in place of the recursive algorithm, so that it can be used where a closed
+    form is needed, as it is here for optimisation.
 
     Args:
         bre_matrix: 2-D array of shape ``(n_rules, n_consequents)`` containing

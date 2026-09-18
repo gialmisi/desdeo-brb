@@ -218,7 +218,7 @@ def test_pipeline_varying_length_referential_values():
     assert np.all(np.isfinite(result.output))
 
 
-# f(x) = cos(sqrt(x)) / (2 + cos(x)^2) from thesis Section 3.7
+# f(x) = cos(sqrt(x)) / (2 + cos(x)^2) from Misitano (2020), Section 3.7
 
 
 def _f_cos_sqrt(x: np.ndarray) -> float:

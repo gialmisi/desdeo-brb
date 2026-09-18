@@ -82,7 +82,7 @@ class RuleBase(BaseModel):
         antecedent_beliefs: One array per attribute, each of shape
             ``(n_rules, n_rv_i)``, giving each rule's belief distribution over
             that attribute's referential values, summing to one. This is the
-            extended form (Liu et al. 2008), where a rule may sit between
+            extended form (Liu et al. 2013), where a rule may sit between
             referential values rather than only at them. Supply this or
             ``rule_antecedent_indices``, not both. Unlike a consequent, an
             antecedent may not be incomplete: distance-based matching assumes
@@ -201,7 +201,7 @@ class RuleBase(BaseModel):
                 # mass and it moves closer to every input, so a rule uncertain
                 # about where it sits would outmatch a rule that is sure, and a
                 # rule asserting nothing would beat both. The formalism admits a
-                # sum below one, but neither Liu et al. (2008) nor Zhuang et al.
+                # sum below one, but neither Liu et al. (2013) nor Zhuang et al.
                 # (2021) say what the distance should then be, so it is refused
                 # rather than computed wrongly.
                 if not np.allclose(beliefs.sum(axis=1), 1.0, atol=1e-6):
