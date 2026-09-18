@@ -57,8 +57,12 @@ jobs:
       - name: Install Python 3.12
         run: uv python install 3.12
 
-      - name: Install dependencies (core + notebooks)
-        run: uv sync --extra notebooks --extra dev
+      # All extras, not just notebooks: a notebook can select an optional
+      # backend at runtime, as 02 does with backend="jax", without importing
+      # it. Such a dependency is invisible to a grep for imports, so install
+      # everything rather than track which notebook needs what.
+      - name: Install dependencies (all extras)
+        run: uv sync --all-extras
 
       # The notebooks are tutorials, not tests: nothing else checks that they
       # still run against the current API, so execute them and fail on error.
